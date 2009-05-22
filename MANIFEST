@@ -1,0 +1,4 @@
+MANIFEST
+Makefile.PL
+META.yml
+lib/Net/Wire10.pm
