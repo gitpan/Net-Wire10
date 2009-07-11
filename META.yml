@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Net-Wire10
-version:             1.00
+version:             1.01
 distribution_type:   module
 requires:     
     Digest::SHA1:                  0

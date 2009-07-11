@@ -16,122 +16,164 @@ use constant {
 	DEFAULT_FLAGS        => 0,
 };
 
-$VERSION = '1.00';
+$VERSION = '1.01';
 
 use constant STREAM_BUFFER_LENGTH => 65536;
 use constant MACKET_HEADER_LENGTH => 4;
 use constant TIMEOUT_GRANULARITY => 1;
 
-# Macket (MySQL messages) types.
-my %MACKET_NAMES = (
-	   1 => 'HANDSHAKE',
-	   2 => 'AUTHENTICATE',
-	   4 => 'OK',
-	   8 => 'ERROR',
-	  16 => 'COMMAND',
-	  32 => 'RESULT_SET_HEADER',
-	  64 => 'COLUMN_INFO',
-	 128 => 'EOF',
-	 256 => 'ROW_DATA',
-	 512 => 'MORE_DATA',
-);
-my %MACKET_VALUES = reverse(%MACKET_NAMES);
+BEGIN {
+	package Net::Wire10;
 
-# Type of commands that can be sent to the server.
-# Only QUIT, QUERY and PING are currently used here.
-my %COMMAND_VALUES = (
-	SLEEP                => "\x00",
-	QUIT                 => "\x01",
-	INIT_DB              => "\x02",
-	QUERY                => "\x03",
-	FIELD_LIST           => "\x04",
-	CREATE_DB            => "\x05",
-	DROP_DB              => "\x06",
-	REFRESH              => "\x07",
-	SHUTDOWN             => "\x08",
-	STATISTICS           => "\x09",
-	PROCESS_INFO         => "\x0A",
-	CONNECT              => "\x0B",
-	PROCESS_KILL         => "\x0C",
-	DEBUG                => "\x0D",
-	PING                 => "\x0E",
-	TIME                 => "\x0F",
-	DELAYED_INSERT       => "\x10",
-	CHANGE_USER          => "\x11",
-	BINLOG_DUMP          => "\x12",
-	TABLE_DUMP           => "\x13",
-	CONNECT_OUT          => "\x14",
-	REGISTER_SLAVE       => "\x15",
-	STMT_PREPARE         => "\x16",
-	STMT_EXECUTE         => "\x17",
-	STMT_SEND_LONG_DATA  => "\x18",
-	STMT_CLOSE           => "\x19",
-	STMT_RESET           => "\x1A",
-	SET_OPTION           => "\x1B",
-	STMT_FETCH           => "\x1C",
-);
-my %COMMAND_NAMES = reverse(%COMMAND_VALUES);
+	# Macket (MySQL messages) types.
+	our %MACKET_NAMES = (
+		   1 => 'HANDSHAKE',
+		   2 => 'AUTHENTICATE',
+		   4 => 'OK',
+		   8 => 'ERROR',
+		  16 => 'COMMAND',
+		  32 => 'RESULT_SET_HEADER',
+		  64 => 'COLUMN_INFO',
+		 128 => 'EOF',
+		 256 => 'ROW_DATA',
+		 512 => 'MORE_DATA',
+	);
 
-# Per-connection flags, some of which are sent to the
-# server during handshake to convey client capabilities.
-my %FLAG_VALUES = (
-	LONG_PASSWORD           => 0x00000001,
-	FOUND_ROWS              => 0x00000002,
-	LONG_FLAG               => 0x00000004,
-	CONNECT_WITH_DB         => 0x00000008,
-	NO_SCHEMA               => 0x00000010,
-	COMPRESS                => 0x00000020,
-	ODBC                    => 0x00000040,
-	LOCAL_FILES             => 0x00000080,
-	IGNORE_SPACE            => 0x00000100,
-	PROTOCOL_41             => 0x00000200,
-	INTERACTIVE             => 0x00000400,
-	SSL                     => 0x00000800,
-	IGNORE_SIGPIPE          => 0x00001000,
-	TRANSACTIONS            => 0x00002000,
-	RESERVED                => 0x00004000,
-	SECURE_CONNECTION       => 0x00008000,
-	MULTI_STATEMENTS        => 0x00010000,
-	MULTI_RESULTS           => 0x00020000,
-	SSL_VERIFY_SERVER_CERT  => 0x40000000,
-	REMEMBER_OPTIONS        => 0x80000000,
-);
-my %FLAG_NAMES = reverse(%FLAG_VALUES);
+	# Type of commands that can be sent to the server.
+	# Only QUIT, QUERY and PING are currently used.
+	our %COMMAND_NAMES = (
+		"\x00" => 'SLEEP',
+		"\x01" => 'QUIT',
+		"\x02" => 'INIT_DB',
+		"\x03" => 'QUERY',
+		"\x04" => 'FIELD_LIST',
+		"\x05" => 'CREATE_DB',
+		"\x06" => 'DROP_DB',
+		"\x07" => 'REFRESH',
+		"\x08" => 'SHUTDOWN',
+		"\x09" => 'STATISTICS',
+		"\x0A" => 'PROCESS_INFO',
+		"\x0B" => 'CONNECT',
+		"\x0C" => 'PROCESS_KILL',
+		"\x0D" => 'DEBUG',
+		"\x0E" => 'PING',
+		"\x0F" => 'TIME',
+		"\x10" => 'DELAYED_INSERT',
+		"\x11" => 'CHANGE_USER',
+		"\x12" => 'BINLOG_DUMP',
+		"\x13" => 'TABLE_DUMP',
+		"\x14" => 'CONNECT_OUT',
+		"\x15" => 'REGISTER_SLAVE',
+		"\x16" => 'STMT_PREPARE',
+		"\x17" => 'STMT_EXECUTE',
+		"\x18" => 'STMT_SEND_LONG_DATA',
+		"\x19" => 'STMT_CLOSE',
+		"\x1A" => 'STMT_RESET',
+		"\x1B" => 'SET_OPTION',
+		"\x1C" => 'STMT_FETCH',
+	);
 
-# Enumerations that are currently not included here:
-#  * Server capabilities
-#  * Server language
-#  * Server status
-#  * Server error code
-#  * Server error state
-#  * Column data type
-#  * Column flags
-#  * Column collation (partial list in Net::Wire10::Results)
+	# Per-connection flags, some of which are sent to the
+	# server during handshake to convey client capabilities.
+	our %FLAG_NAMES = (
+		0x00000001 => 'LONG_PASSWORD',
+		0x00000002 => 'FOUND_ROWS',
+		0x00000004 => 'LONG_FLAG',
+		0x00000008 => 'CONNECT_WITH_DB',
+		0x00000010 => 'NO_SCHEMA',
+		0x00000020 => 'COMPRESS',
+		0x00000040 => 'ODBC',
+		0x00000080 => 'LOCAL_FILES',
+		0x00000100 => 'IGNORE_SPACE',
+		0x00000200 => 'PROTOCOL_41',
+		0x00000400 => 'INTERACTIVE',
+		0x00000800 => 'SSL',
+		0x00001000 => 'IGNORE_SIGPIPE',
+		0x00002000 => 'TRANSACTIONS',
+		0x00004000 => 'RESERVED',
+		0x00008000 => 'SECURE_CONNECTION',
+		0x00010000 => 'MULTI_STATEMENTS',
+		0x00020000 => 'MULTI_RESULTS',
+		0x40000000 => 'SSL_VERIFY_SERVER_CERT',
+		0x80000000 => 'REMEMBER_OPTIONS',
+	);
 
-# TODO: An enumeration with a 2xxx error code for each client-side error.
+	our %UTF8_COLLATIONS = (
+		33 => 'UTF8_GENERAL_CI',
+		83 => 'UTF8_BIN',
+		192 => 'UTF8_UNICODE_CI',
+		193 => 'UTF8_ICELANDIC_CI',
+		194 => 'UTF8_LATVIAN_CI',
+		195 => 'UTF8_ROMANIAN_CI',
+		196 => 'UTF8_SLOVENIAN_CI',
+		197 => 'UTF8_POLISH_CI',
+		198 => 'UTF8_ESTONIAN_CI',
+		199 => 'UTF8_SPANISH_CI',
+		200 => 'UTF8_SWEDISH_CI',
+		201 => 'UTF8_TURKISH_CI',
+		202 => 'UTF8_CZECH_CI',
+		203 => 'UTF8_DANISH_CI',
+		204 => 'UTF8_LITHUANIAN_CI',
+		205 => 'UTF8_SLOVAK_CI',
+		206 => 'UTF8_SPANISH2_CI',
+		207 => 'UTF8_ROMAN_CI',
+		208 => 'UTF8_PERSIAN_CI',
+		209 => 'UTF8_ESPERANTO_CI',
+		210 => 'UTF8_HUNGARIAN_CI',
+	);
 
-# Simulate a constant ENUM type in Perl.
-sub MACKET {
-	my $in = shift;
-	my $b = ord($in);
-	return $MACKET_VALUES{$in} || die "Constant $in not found" if $b < 48 || $b > 57;
-	return $MACKET_NAMES{$in} || die "Constant $in not found";
+	# Enumerations that are currently not included here:
+	#  * Server capabilities
+	#  * Server language
+	#  * Server status
+	#  * Server error code
+	#  * Server error state
+	#  * Data types
+	#  * Column flags
+	#  * Collations (complete)
+
+	# TODO: An enumeration with a 2xxx error code for each client-side error.
+
+	sub _assign {
+		no strict 'refs';
+		my $pkg = caller() . '::';
+		my $key = shift;
+		my $value = shift;
+		*{"$pkg$key"} = sub () { $value };
+	}
+
+	sub _make_constant {
+		my $what = shift;
+		my $prefix = shift;
+		my $i = 0;
+		while ((my $key, my $value) = each(%$what)) {
+			_assign("$prefix$value", $key);
+		}
+	}
+
+	sub _find_largest_uint {
+		# Assumes the Perl compiler uses signed integers.
+		my $cur = 0;
+		my $next = 0;
+		for (my $i = 0; $i <= 16; $i++) {
+			$next += (0xff << ($i * 8));
+			return $i if sprintf("%d", $next) < 0;
+			$cur = $next;
+		}
+	}
+
+	_assign("MAX_UINT_SIZE", _find_largest_uint);
+
+	_make_constant(\%MACKET_NAMES, "MACKET_");
+	_make_constant(\%COMMAND_NAMES, "COMMAND_");
+	_make_constant(\%FLAG_NAMES, "FLAG_");
+	_make_constant(\%UTF8_COLLATIONS, "");
 }
 
-# Simulate a constant ENUM type in Perl.
-sub COMMAND {
-	my $in = shift;
-	return $COMMAND_VALUES{$in} || die "Constant $in not found" if length($in) != 1;
-	return $COMMAND_NAMES{$in} || die "Constant $in not found";
-}
-
-# Simulate a constant ENUM type in Perl.
-sub FLAG {
-	my $in = shift;
-	my $b = ord($in);
-	return $FLAG_VALUES{$in} || die "Constant $in not found" if $b < 48 || $b > 57;
-	return $FLAG_NAMES{$in} || die "Constant $in not found";
-}
+my %MACKET_NAMES = %{*MACKET_NAMES};
+my %COMMAND_NAMES = %{*COMMAND_NAMES};
+my %FLAG_NAMES = %{*FLAG_NAMES};
+my %UTF8_COLLATIONS = %{*UTF8_COLLATIONS};
 
 # Constructor
 sub new {
@@ -172,7 +214,10 @@ sub query {
 	$self->_check_connected;
 	$self->_reset_command_state;
 	$self->_reset_timeout;
-	return $self->_execute_command(COMMAND(q{QUERY}), $sql);
+
+	my $iterator = Net::Wire10::Results->new($self);
+	$self->_execute_command(COMMAND_QUERY, $sql, $iterator);
+	return $iterator;
 }
 
 # Sends an SQL query, but does not read any rows in the result set
@@ -185,7 +230,11 @@ sub stream {
 	$self->_reset_command_state;
 	$self->_reset_timeout;
 	$self->{streaming} = 1;
-	return $self->_execute_command(COMMAND(q{QUERY}), $sql);
+
+	my $iterator = Net::Wire10::Results->new($self);
+	$self->{streaming_iterator} = $iterator;
+	$self->_execute_command(COMMAND_QUERY, $sql, $iterator);
+	return $iterator;
 }
 
 # Sends a wire protocol ping
@@ -196,7 +245,7 @@ sub ping {
 	$self->_check_connected;
 	$self->_reset_command_state;
 	$self->_reset_timeout;
-	return $self->_execute_command(COMMAND(q{PING}), '');
+	return $self->_execute_command(COMMAND_PING, '', undef);
 }
 
 # Close the database connection
@@ -209,8 +258,8 @@ sub disconnect {
 		if ($socket) {
 			if ($select) {
 				if ($select->can_write(TIMEOUT_GRANULARITY)) {
-					my $body = COMMAND(q{QUIT});
-					$self->_send_mackets($body, 0, MACKET(q{COMMAND}));
+					my $body = COMMAND_QUIT;
+					$self->_send_mackets($body, 0, MACKET_COMMAND);
 				}
 			}
 			$socket->close;
@@ -231,41 +280,10 @@ sub cancel {
 	return undef;
 }
 
-# Get the number of affected rows
-sub get_no_of_affected_rows {
-	my $self = shift;
-	return $self->{no_of_affected_rows};
-}
-
-# Get the number of selected rows
-sub get_no_of_selected_rows {
-	my $self = shift;
-	return 0 unless defined $self->{row_data};
-	scalar(@{$self->{row_data}});
-}
-
 # Get the connection id
 sub get_connection_id {
 	my $self = shift;
 	return $self->{server_thread_id};
-}
-
-# Get the insert id
-sub get_insert_id {
-	my $self = shift;
-	return $self->{insert_id};
-}
-
-# Get the number of warnings
-sub get_warning_count {
-	my $self = shift;
-	return $self->{warnings};
-}
-
-# Get the server status flags
-sub get_server_status {
-	my $self = shift;
-	return $self->{server_status};
 }
 
 # Get the server version string
@@ -274,45 +292,11 @@ sub get_server_version {
 	return $self->{server_version};
 }
 
-# Create a result iterator
-sub create_result_iterator {
-	my $self = shift;
-	return undef unless $self->has_results;
-	my $iterator;
-
-	if ($self->{streaming}) {
-		if ($self->{streaming_iterator}) {
-			$self->_vanilla_error("An iterator is already active streaming results for the current query");
-		}
-		$iterator = Net::Wire10::Results->new(
-			\@{$self->{column_info}},
-			undef,
-			$self
-		);
-		$self->{streaming_iterator} = $iterator;
-	} else {
-		return undef unless defined($self->{row_data});
-		$iterator = Net::Wire10::Results->new(
-			\@{$self->{column_info}},
-			\@{$self->{row_data}},
-			undef
-		);
-		$self->{row_data} = undef;
-	}
-	return $iterator;
-}
-
 # Is the driver currently connected?
 # If a fatal error has occurred, this will return false
 sub is_connected {
 	my $self = shift;
 	return defined($self->{socket});
-}
-
-# Did the query return a set of results or not
-sub has_results {
-	my $self = shift;
-	defined ($self->{no_of_columns}) ? 1 : undef;
 }
 
 # Check if the error flag is set
@@ -481,10 +465,6 @@ sub _queue_mackets {
 
 	# As long as we can read a macket header
 	while ($self->{packet_read} > MACKET_HEADER_LENGTH) {
-		# Note: Field values that overflow from one macket into
-		#       the next (fragmented mackets) are handled in
-		#       _retrieve_results().
-		return undef if $self->{packet_read} < MACKET_HEADER_LENGTH;
 		# Get the length of the next macket, plus header length.
 		if (! defined($self->{packet_goal})) {
 			my $pos = 0;
@@ -493,9 +473,8 @@ sub _queue_mackets {
 		}
 		return undef if $self->{packet_read} < $self->{packet_goal};
 		print "Shifting a new macket totalling " . $self->{packet_goal} . " bytes into the macket queue.\n" if $self->{debug} & 1;
-		my $macket = { buf => substr($$packet, 0, $self->{packet_goal}) };
+		my $macket = { buf => substr($$packet, 0, $self->{packet_goal}, '') };
 		unshift(@{$self->{macket_queue}}, $macket);
-		$$packet = substr($$packet, $self->{packet_goal});
 		$self->{packet_read} -= $self->{packet_goal};
 		$self->{packet_goal} = undef;
 	}
@@ -534,43 +513,43 @@ sub _check_received_macket_type {
 
 	# If this is a error macket set error information and return,
 	# regardless of what caller expects (error mackets are always expected).
-	if ($type == MACKET(q{ERROR})) {
+	if ($type == MACKET_ERROR) {
 		$self->_parse_error_macket($macket);
 		return undef;
 	}
 
-	if ($expected & MACKET(q{EOF})) {
-		return undef if ($type == MACKET(q{EOF}));
+	if ($expected & MACKET_EOF) {
+		return undef if ($type == MACKET_EOF);
 		$msg .= "Expected EOF Macket, did not receive it!\n";
 	}
 
-	if ($expected & MACKET(q{HANDSHAKE})) {
-		return undef if ($type == MACKET(q{HANDSHAKE}));
+	if ($expected & MACKET_HANDSHAKE) {
+		return undef if ($type == MACKET_HANDSHAKE);
 		$msg .= "Expected Handshake Initialization Macket, did not recieve it!\n";
 	}
 
-	if ($expected & MACKET(q{OK})) {
-		return undef if ($type == MACKET(q{OK}));
+	if ($expected & MACKET_OK) {
+		return undef if ($type == MACKET_OK);
 		$msg .= "Expected OK Macket, did not receive it!\n";
 	}
 
-	if ($expected & MACKET(q{RESULT_SET_HEADER})) {
-		return undef if ($type == MACKET(q{RESULT_SET_HEADER}));
+	if ($expected & MACKET_RESULT_SET_HEADER) {
+		return undef if ($type == MACKET_RESULT_SET_HEADER);
 		$msg .= "Expected Result Set Header Macket, dit not receive it!\n";
 	}
 
-	if ($expected & MACKET(q{COLUMN_INFO})) {
-		return undef if ($type == MACKET(q{COLUMN_INFO}));
+	if ($expected & MACKET_COLUMN_INFO) {
+		return undef if ($type == MACKET_COLUMN_INFO);
 		$msg .= "Expected Column Info Macket, did not receive it!\n";
 	}
 
-	if ($expected & MACKET(q{ROW_DATA})) {
-		return undef if ($type == MACKET(q{ROW_DATA}));
+	if ($expected & MACKET_ROW_DATA) {
+		return undef if ($type == MACKET_ROW_DATA);
 		$msg .= "Expected Row Data Macket, did not receive it!\n";
 	}
 
-	if ($expected & MACKET(q{MORE_DATA})) {
-		return undef if ($type == MACKET(q{MORE_DATA}));
+	if ($expected & MACKET_MORE_DATA) {
+		return undef if ($type == MACKET_MORE_DATA);
 		$msg .= "Expected Fragmented Data Macket, did not receive it!\n";
 	}
 
@@ -585,35 +564,35 @@ sub _derive_received_macket_type {
 
 	# If this is a error macket set error information and return
 	if (ord(substr($macket->{buf}, MACKET_HEADER_LENGTH, 1)) == 0xff) {
-		return $macket->{type} = MACKET(q{ERROR});
+		return $macket->{type} = MACKET_ERROR;
 	}
 
 	if ($self->_extract_macket_length($macket) < 9 && ord(substr($macket->{buf}, MACKET_HEADER_LENGTH, 1)) == 0xFE) {
-		return $macket->{type} = MACKET(q{EOF});
+		return $macket->{type} = MACKET_EOF;
 	}
 
 	if (ord(substr($macket->{buf}, MACKET_HEADER_LENGTH, 1)) == 0) {
-		return $macket->{type} = MACKET(q{OK});
+		return $macket->{type} = MACKET_OK;
 	}
 
 	if ($self->_extract_macket_number($macket) == 0 && ! defined($self->{protocol_version})) {
-		return $macket->{type} = MACKET(q{HANDSHAKE});
+		return $macket->{type} = MACKET_HANDSHAKE;
 	}
 
 	if (! defined($self->{no_of_columns})) {
-		return $macket->{type} = MACKET(q{RESULT_SET_HEADER});
+		return $macket->{type} = MACKET_RESULT_SET_HEADER;
 	}
 
-	if ($self->{expected_macket} & MACKET(q{COLUMN_INFO})) {
-		return $macket->{type} = MACKET(q{COLUMN_INFO});
+	if ($self->{expected_macket} & MACKET_COLUMN_INFO) {
+		return $macket->{type} = MACKET_COLUMN_INFO;
 	}
 
-	if ($self->{expected_macket} & MACKET(q{ROW_DATA})) {
-		return $macket->{type} = MACKET(q{ROW_DATA});
+	if ($self->{expected_macket} & MACKET_ROW_DATA) {
+		return $macket->{type} = MACKET_ROW_DATA;
 	}
 
-	if ($self->{expected_macket} & MACKET(q{MORE_DATA})) {
-		return $macket->{type} = MACKET(q{MORE_DATA});
+	if ($self->{expected_macket} & MACKET_MORE_DATA) {
+		return $macket->{type} = MACKET_MORE_DATA;
 	}
 
 	$self->_fatal_error("Unknown macket type received");
@@ -637,7 +616,7 @@ sub _send_mackets {
 		my $head_len = Net::Wire10::Util::encode_my_uint($chunk_len, 3);
 		my $head_nr = Net::Wire10::Util::encode_my_uint($nr, 1);
 		my $chunk = substr($body, $pos, $chunk_len);
-		$type = MACKET(q{MORE_DATA}) if ($pos > 0);
+		$type = MACKET_MORE_DATA if ($pos > 0);
 		my $macket = { buf => $head_len . $head_nr . $chunk, type => $type };
 
 		$self->_dump_macket($macket);
@@ -655,14 +634,18 @@ sub _send_mackets {
 sub _perform_handshake {
 	my $self = shift;
 
-	$self->{expected_macket} = MACKET(q{HANDSHAKE});
+	$self->{expected_macket} = MACKET_HANDSHAKE;
 
 	my $macket = $self->_next_macket;
 
 	# Server will send an error instead of greeting
 	# if too many connection slots are filled.
-	if ($macket->{type} == MACKET(q{ERROR})) {
-		$self->_fatal_error("Connect failed with\nError code: " . $self->{error_code} . "\nMessage: " . $self->{error_message});
+	if ($macket->{type} == MACKET_ERROR) {
+		$self->_fatal_error(sprintf(
+			"Connect failed:\n  Error code: %d\n  Message: %s",
+			$self->{error_code},
+			$self->{error_message}
+		));
 	}
 
 	# Skip the macket header as it has been processed by _next_macket().
@@ -690,15 +673,15 @@ sub _perform_handshake {
 	$self->{salt} = substr $macket->{buf}, $i, 8;
 	# Enables the use of old passwords
 	$self->{salt_old} = $self->{salt};
-	# The salt part are 8 bytes long and there is a one byte filler after
+	# The salt part is 8 bytes long and there is a one byte filler after
 	$i += 8 + 1;
-	# Server_capabilities are not used at the moment
+	# Server_capabilities is not used at the moment
 	my $server_caps = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$i, 2);
 	printf "Server capabilities (ignored): 0x%x\n", $server_caps if $self->{debug} & 1;
-	# Server_language are not used at the moment
+	# Server_language is not used at the moment
 	my $server_lang = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$i, 1);
 	printf "Server language (ignored): %d\n", $server_lang if $self->{debug} & 1;
-	# Server_status are not used at the moment
+	# Server_status is not used at the moment
 	my $server_status = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$i, 2);
 	printf "Server status (ignored): 0x%x\n", $server_status if $self->{debug} & 1;
 	# 13 byte filler
@@ -718,17 +701,26 @@ sub _perform_authentication {
 	my $self = shift;
 
 	$self->_send_login_message;
-	$self->{expected_macket} = MACKET(q{EOF}) + MACKET(q{OK});
+	$self->{expected_macket} = MACKET_EOF + MACKET_OK;
 
 	my $auth_result = $self->_next_macket;
-	if ($auth_result->{type} == MACKET(q{ERROR})) {
-		$self->_fatal_error("Authentication failed with\nError code: " . $self->{error_code} . "\nMessage: " . $self->{error_message});
-	} elsif ($auth_result->{type} == MACKET(q{EOF})) {
+	if ($auth_result->{type} == MACKET_ERROR) {
+		$self->_fatal_error(sprintf(
+			"Authentication failed with:\n  Error code: %d\n  Message: %s",
+			$self->{error_code},
+			$self->{error_message}
+		));
+	}
+	if ($auth_result->{type} == MACKET_EOF) {
 		$self->_send_old_password;
-		$self->{expected_macket} = MACKET(q{OK});
+		$self->{expected_macket} = MACKET_OK;
 		$auth_result = $self->_next_macket;
-		if ($auth_result->{type} == MACKET(q{ERROR})) {
-			$self->_fatal_error("Authentication failed with error code '" . $self->{error_code} . "' message '" . $self->{error_message} . "'");
+		if ($auth_result->{type} == MACKET_ERROR) {
+			$self->_fatal_error(sprintf(
+				"Authentication failed with:\n  Error code: %d\n  Message: %s",
+				$self->{error_code},
+				$self->{error_message}
+			));
 		}
 	}
 	print "Connected to database server\n" if $self->{debug} & 1;
@@ -740,17 +732,17 @@ sub _send_login_message {
 
 	# Obligatory flags
 	my $driver_flags =
-		FLAG(q{LONG_PASSWORD}) +
-		FLAG(q{LONG_FLAG}) +
-		FLAG(q{CONNECT_WITH_DB}) +
+		FLAG_LONG_PASSWORD +
+		FLAG_LONG_FLAG +
+		FLAG_CONNECT_WITH_DB +
 		# Unsupported:  COMPRESS
 		# Unsupported:  LOCAL_FILES
-		FLAG(q{PROTOCOL_41}) +
+		FLAG_PROTOCOL_41 +
 		# Unsupported:  SSL
 		# Unsupported:  IGNORE_SIGPIPE
-		FLAG(q{TRANSACTIONS}) +
+		FLAG_TRANSACTIONS +
 		# Unsupported:  RESERVED
-		FLAG(q{SECURE_CONNECTION});
+		FLAG_SECURE_CONNECTION;
 		# Unsupported:  MULTI_STATEMENTS
 		# Unsupported:  MULTI_RESULTS
 		# Unsupported:  SSL_VERIFY_SERVER_CERT
@@ -758,11 +750,11 @@ sub _send_login_message {
 
 	# Optional flags
 	my $customizable_flags =
-		FLAG(q{FOUND_ROWS}) +
-		FLAG(q{NO_SCHEMA}) +
-		FLAG(q{ODBC}) +
-		FLAG(q{IGNORE_SPACE}) +
-		FLAG(q{INTERACTIVE});
+		FLAG_FOUND_ROWS +
+		FLAG_NO_SCHEMA +
+		FLAG_ODBC +
+		FLAG_IGNORE_SPACE +
+		FLAG_INTERACTIVE;
 
 	my $flags = $driver_flags | ($customizable_flags & $self->{flags});
 	my $body .= Net::Wire10::Util::encode_my_uint($flags, 4);
@@ -771,9 +763,8 @@ sub _send_login_message {
 	# sending and accepts overflowed data when receiving.
 	# See also note in _send_mackets().
 	$body .= Net::Wire10::Util::encode_my_uint(0xffffffff, 4);
-	# Character set; hardcoded to UTF-8,
-	# used in _parse_column_info_macket().
-	$body .= "\x21";
+	# Character set; hardcoded to UTF-8, used in _parse_column_info_macket().
+	$body .= chr(UTF8_GENERAL_CI);
 	# 23 bytes filler.
 	$body .= "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 	# Null-terminated: user name
@@ -791,7 +782,7 @@ sub _send_login_message {
 		$body .= $self->{database};
 		$body .= "\0";
 	}
-	$self->_send_mackets($body, 1, MACKET(q{AUTHENTICATE}));
+	$self->_send_mackets($body, 1, MACKET_AUTHENTICATE);
 }
 
 # Sends old format client authentication
@@ -800,7 +791,7 @@ sub _send_old_password {
 	my $body = Net::Wire10::Password32->scramble(
 		$self->{password}, $self->{salt_old}, 1
 	) . "\0";
-	$self->_send_mackets($body, 3, MACKET(q{AUTHENTICATE}));
+	$self->_send_mackets($body, 3, MACKET_AUTHENTICATE);
 }
 
 # Execute a SQL command
@@ -808,6 +799,7 @@ sub _execute_command {
 	my $self = shift;
 	my $command = shift;
 	my $sql = shift;
+	my $iterator = shift;
 
 	# Internal representation of input data is expected to be in UTF-8;
 	# automatically convert if it's not.
@@ -824,26 +816,25 @@ sub _execute_command {
 
 	# Send the SQL command
 	my $body = $command . $sql;
-	$self->_send_mackets($body, 0, MACKET(q{COMMAND}));
-	$self->{expected_macket} = MACKET(q{OK}) | MACKET(q{RESULT_SET_HEADER});
+	$self->_send_mackets($body, 0, MACKET_COMMAND);
+	$self->{expected_macket} = MACKET_OK | MACKET_RESULT_SET_HEADER;
 
 	# Receive the result from the database
 	my $macket = $self->_next_macket;
 
-	if ($macket->{type} == MACKET(q{ERROR})) {
+	if ($macket->{type} == MACKET_ERROR) {
 		$self->{streaming} = 0;
 		$self->_vanilla_error($self->{error_message});
 	}
-	if ($macket->{type} == MACKET(q{RESULT_SET_HEADER})) {
+	if ($macket->{type} == MACKET_RESULT_SET_HEADER) {
 		my $pos = MACKET_HEADER_LENGTH;
 		$self->_parse_result_set_header_macket($macket, \$pos);
-		$self->_retrieve_column_info;
-		return -1 if $self->{streaming};
-		$self->_retrieve_results;
-		return get_no_of_selected_rows;
-	} elsif ($macket->{type} == MACKET(q{OK})) {
-		$self->{streaming} = 0;
-		return $self->_parse_ok_macket($macket);
+		$self->_retrieve_column_info($iterator);
+		$self->_retrieve_results($iterator) unless $self->{streaming};
+	}
+	if ($macket->{type} == MACKET_OK) {
+		$self->_parse_ok_macket($macket, $iterator);
+		$self->_detach_results;
 	}
 }
 
@@ -868,7 +859,7 @@ sub _parse_error_macket {
 	my $self = shift;
 	my $macket = shift;
 
-	if ($macket->{type} != MACKET(q{ERROR})) {
+	if ($macket->{type} != MACKET_ERROR) {
 		$self->_fatal_error("Expected error macket");
 	}
 
@@ -899,57 +890,63 @@ sub _retrieve_column_info {
 	my $self = shift;
 	my @queue = ();
 	my $macket;
+	my $iterator = shift;
 
-	$self->{expected_macket} = MACKET(q{COLUMN_INFO}) | MACKET(q{EOF});
+	$self->{expected_macket} = MACKET_COLUMN_INFO | MACKET_EOF;
 	# Put all field mackets in the selected queue
 	do {
 		$macket = $self->_next_macket;
-		$self->_fatal_error("Server reported error while reading column info: ".$self->{error_message}) if $macket->{type} == MACKET(q{ERROR});
-		if ($macket->{type} == MACKET(q{COLUMN_INFO})) {
+		if ($macket->{type} == MACKET_ERROR) {
+			$self->_fatal_error("Server reported error while reading column info: ".$self->{error_message});
+		}
+		if ($macket->{type} == MACKET_COLUMN_INFO) {
 			my $column_info = $self->_parse_column_info_macket($macket);
 			push(@queue, $column_info);
 		}
-	} until ($macket->{type} == MACKET(q{EOF}));
-	$self->{column_info} = \@queue;
-	if ($self->{no_of_columns} ne scalar (@{$self->{column_info}})) {
+	} until ($macket->{type} == MACKET_EOF);
+	if ($self->{no_of_columns} ne scalar @queue) {
 		$self->_fatal_error(sprintf(
 			"Server reported %d columns, but sent %d",
 			$self->{no_of_columns},
-			scalar (@{$self->{column_info}})
+			scalar @queue
 		));
 	}
+	$iterator->{column_info} = \@queue;
+	$self->_parse_eof_macket($macket, $iterator);
 }
 
 # Reads all rows in result set
 sub _retrieve_results {
 	my $self = shift;
-	my @queue = ();
+	my $iterator = shift;
 
 	# Put all row data in the selected queue
-	while (my $data = $self->_retrieve_row_data) {
-		push(@queue, $data);
-	}
-	$self->{row_data} = \@queue;
+	while ($self->_retrieve_row_data($iterator)) {}
 }
 
 # Reads row data or EOF, possibly
 # interrupted at any point by an error from the server
 sub _retrieve_row_data {
 	my $self = shift;
-	$self->{expected_macket} = MACKET(q{ROW_DATA}) + MACKET(q{EOF});
+	my $iterator = shift;
+
+	$self->{expected_macket} = MACKET_ROW_DATA + MACKET_EOF;
 	my $macket = $self->_next_macket;
 
-	if ($macket->{type} == MACKET(q{ERROR})) {
+	if ($macket->{type} == MACKET_ERROR) {
 		$self->_fatal_error("Server reported error while reading row data: ".$self->{error_message});
-	} elsif ($macket->{type} == MACKET(q{ROW_DATA})) {
+	}
+	if ($macket->{type} == MACKET_ROW_DATA) {
 		my $nasty = $self->_field_value_exceeds_buffer($macket->{buf}, MACKET_HEADER_LENGTH);
 		while ($nasty > 0) {
 			# Glue together to form proper macket
 			# (with invalid macket_length).
 			printf "Fragmented macket found: field value exceeds macket by %d bytes.  Retrieving one more fragment macket.\n", $nasty if $self->{debug} & 1;
-			$self->{expected_macket} = MACKET(q{MORE_DATA});
+			$self->{expected_macket} = MACKET_MORE_DATA;
 			my $next_macket = $self->_next_macket;
-			$self->_fatal_error("Server reported error while reading more row data: ".$self->{error_message}) if $macket->{type} == MACKET(q{ERROR});
+			if ($macket->{type} == MACKET_ERROR) {
+				$self->_fatal_error("Server reported error while reading more row data: ".$self->{error_message});
+			}
 			$nasty = $self->_field_value_exceeds_buffer($next_macket->{buf}, MACKET_HEADER_LENGTH + $nasty);
 			# Remove header from next fragment.
 			substr($next_macket->{buf}, 0, MACKET_HEADER_LENGTH, "");
@@ -959,21 +956,26 @@ sub _retrieve_row_data {
 		# Remove header from first fragment.
 		substr($macket->{buf}, 0, MACKET_HEADER_LENGTH, "");
 		printf "Unshifting %d bytes of row data onto queue.\n", length($macket->{buf}) if $self->{debug} & 1;
-		return $macket->{buf};
-	} elsif ($macket->{type} == MACKET(q{EOF})) {
-		# Read EOF macket
-		my $pos = MACKET_HEADER_LENGTH + 1;
-		# Warning count
-		$self->{warnings} = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
-		printf "\nWarning count: %d\n", $self->{warnings} if $self->{debug} & 1;
-		# Server status, would include SERVER_STATUS_MORE_RESULTS
-		# had multiple result sets been enabled.
-		$self->{server_status} = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
-		printf "Server status flags: 0x%x\n", $self->{server_status} if $self->{debug} & 1;
-		$self->{streaming} = 0;
-		$self->{streaming_iterator} = undef;
-		return undef;
+		push(@{$iterator->{row_data}}, $macket->{buf});
+		# More data may be available.
+		return 1;
 	}
+	if ($macket->{type} == MACKET_EOF) {
+		# Read EOF macket
+		$self->_parse_eof_macket($macket, $iterator);
+		$self->_detach_results($iterator);
+		# No more data available.
+		return 0;
+	}
+}
+
+# Disconnect result set from driver, must only be done after all results have been read
+sub _detach_results {
+	my $self = shift;
+	my $iterator = shift;
+	$iterator->{wire} = undef;
+	$self->{streaming_iterator} = undef;
+	$self->{streaming} = 0;
 }
 
 # Reads and interprets OK, saving the number of affected rows,
@@ -982,6 +984,7 @@ sub _retrieve_row_data {
 sub _parse_ok_macket {
 	my $self = shift;
 	my $macket = shift;
+	my $iterator = shift;
 
 	# Because affected rows is a Length Coded Binary
 	# we use pointers to the position in the macket.
@@ -990,23 +993,42 @@ sub _parse_ok_macket {
 	# First, skip macket header and macket type.
 	my $pos = MACKET_HEADER_LENGTH + 1;
 	# Affected rows
-	$self->{no_of_affected_rows} = $self->_decode_lcb_or_fail($macket->{buf}, \$pos);
-	printf "\nAffected rows: %d\n", $self->{no_of_affected_rows} if $self->{debug} & 1;
+	my $affected = $self->_decode_lcb_or_fail($macket->{buf}, \$pos);
+	printf "\nAffected rows: %d\n", $affected if $self->{debug} & 1;
 	# Insert id
-	$self->{insert_id} = $self->_decode_lcb_or_fail($macket->{buf}, \$pos);
-	printf "Insert id: %d\n", $self->{insert_id} if $self->{debug} & 1;
+	my $id = $self->_decode_lcb_or_fail($macket->{buf}, \$pos);
+	printf "Insert id: %d\n", $id if $self->{debug} & 1;
 	# Server status
-	$self->{server_status} = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
-	printf "Server status flags: 0x%x\n", $self->{server_status} if $self->{debug} & 1;
+	my $status = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
+	printf "Server status flags (ignored): 0x%x\n", $status if $self->{debug} & 1;
 	# Warning count
-	$self->{warnings} = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
-	printf "Warning count: %d\n", $self->{warnings} if $self->{debug} & 1;
+	my $warnings = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
+	printf "Warning count: %d\n", $warnings if $self->{debug} & 1;
 	# Message
-	$self->{server_message} = substr($macket->{buf}, $pos);
-	Encode::_utf8_on($self->{server_message});
-	printf "Server message: %s\n", $self->{server_message} if $self->{debug} & 1;
+	my $message = substr($macket->{buf}, $pos);
+	Encode::_utf8_on($message);
+	printf "Server message (ignored): %s\n", $message if $self->{debug} & 1;
 
-	return $self->{no_of_affected_rows};
+	$iterator->{no_of_affected_rows} = $affected;
+	$iterator->{insert_id} = $id;
+	$iterator->{warnings} = $warnings;
+}
+
+# Reads and interprets EOF, saving relevant values.
+sub _parse_eof_macket {
+	my $self = shift;
+	my $macket = shift;
+	my $iterator = shift;
+
+	my $pos = MACKET_HEADER_LENGTH + 1;
+	# Warning count
+	my $warnings = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
+	printf "Warning count: %d\n", $warnings if $self->{debug} & 1;
+	# Server status
+	my $status = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
+	printf "Server status flags (ignored): 0x%x\n", $status if $self->{debug} & 1;
+
+	$iterator->{warnings} = $warnings;
 }
 
 # Reads and interprets column information
@@ -1134,24 +1156,16 @@ sub _decode_string_or_fail {
 # Resets the command execution status
 sub _reset_command_state {
 	my $self = shift;
-	if ($self->{streaming_iterator}) {
-		# Disconnect streaming iterator.
-		$self->{streaming_iterator}->{wire} = undef;
-	}
-	$self->{insert_id} = undef;
+	# Disconnect streaming iterator.
+	$self->{streaming_iterator}->_detach if $self->{streaming_iterator};
+	# Reset internal column counter.
 	$self->{no_of_columns} = undef;
-	$self->{no_of_affected_rows} = undef;
-	$self->{warnings} = 0;
-	$self->{server_status} = 0;
-	$self->{server_message} = '';
+	# Reset error state.
 	$self->{error_code} = undef;
 	$self->{error_state} = undef;
 	$self->{error_message} = '';
-	$self->{column_info} = undef;
-	$self->{row_data} = undef;
+	# Reset cancel flag.
 	$self->{cancelling} = 0;
-	$self->{streaming} = 0;
-	$self->{streaming_iterator} = undef;
 }
 
 # Reset entire connection
@@ -1168,8 +1182,6 @@ sub _reset_connection_state {
 	$self->{expected_macket} = undef;
 	$self->{macket_queue} = [];
 	$self->{command_expire_time} = undef;
-	$self->{column_info} = [];
-	$self->{row_data} = [];
 }
 
 # Dumps the packet to standard output, useful for debugging
@@ -1216,7 +1228,7 @@ sub _dump_macket {
 	$str .= sprintf "  -> serial: %d\n", Net::Wire10::_extract_macket_number($self, $macket);
 	$str .= sprintf "  -> length: %d\n", Net::Wire10::_extract_macket_length($self, $macket);
 	my $type = $macket->{type};
-	$str .= sprintf "  -> type:   %s\n", MACKET($type);
+	$str .= sprintf "  -> type:   %s\n", $Net::Wire10::MACKET_NAMES{$type};
 	$str .= sprintf "  -> data:   ";
 	my $len = length($macket->{buf});
 	my $skipped = 0;
@@ -1254,40 +1266,14 @@ use strict;
 use warnings;
 use Encode;
 
-use constant UTF8_COLLATIONS => {
-	33 => 1,    # utf8_general_ci
-	83 => 1,    # utf8_bin
-	192 => 1,   # utf8_unicode_ci
-	193 => 1,   # utf8_icelandic_ci
-	194 => 1,   # utf8_latvian_ci
-	195 => 1,   # utf8_romanian_ci
-	196 => 1,   # utf8_slovenian_ci
-	197 => 1,   # utf8_polish_ci
-	198 => 1,   # utf8_estonian_ci
-	199 => 1,   # utf8_spanish_ci
-	200 => 1,   # utf8_swedish_ci
-	201 => 1,   # utf8_turkish_ci
-	202 => 1,   # utf8_czech_ci
-	203 => 1,   # utf8_danish_ci
-	204 => 1,   # utf8_lithuanian_ci
-	205 => 1,   # utf8_slovak_ci
-	206 => 1,   # utf8_spanish2_ci
-	207 => 1,   # utf8_roman_ci
-	208 => 1,   # utf8_persian_ci
-	209 => 1,   # utf8_esperanto_ci
-	210 => 1,   # utf8_hungarian_ci
-};
-
 # Constructor
 sub new {
 	my $class = shift;
-	my $column_info = shift;
-	my $row_data = shift;
 	my $wire = shift;
 	return bless {
-		column_info => $column_info,
-		row_data => $row_data,
-		wire => $wire
+		wire => $wire,
+		column_info => [],
+		row_data => []
 	}, $class;
 }
 
@@ -1301,28 +1287,20 @@ sub next_array {
 	#       For disconnected result sets, row data is integrity checked
 	#       during query() to simplify error handling for applications.
 
-	unless ($self->{row_data} || $self->{wire}) {
-		die "Result set was disconnected from data source";
-	}
-
 	if ($self->{wire}) {
-		$row = $self->{wire}->_retrieve_row_data;
-		unless ($row) {
-			# Flag that there are no more rows.
-			$self->{row_data} = [] unless $row;
-			$self->{wire} = undef;
-			return undef;
-		}
-	} elsif ($self->{row_data}) {
-		return undef if scalar(@{$self->{row_data}}) == 0;
-		$row = pop(@{$self->{row_data}});
+		# In streaming mode, fetch a row
+		return undef unless $self->{wire}->_retrieve_row_data($self);
 	}
 
+	# Return unless there is another row available
+	return undef if scalar(@{$self->{row_data}}) == 0;
+
+	$row = pop(@{$self->{row_data}});
 	my $pos = 0;
 	for (my $i = 1; $i <= $self->get_no_of_columns; $i++) {
 		my $fieldvalue = Net::Wire10::Util::decode_string($row, \$pos);
 		my $collation = $self->{column_info}->[$i - 1]->{"collation"};
-		UTF8_COLLATIONS->{$collation} and Encode::_utf8_on($fieldvalue);
+		$Net::Wire10::UTF8_COLLATIONS{$collation} and Encode::_utf8_on($fieldvalue);
 		push @result, $fieldvalue;
 	}
 
@@ -1333,16 +1311,25 @@ sub next_array {
 sub next_hash {
 	my $self = shift;
 	my $row = $self->next_array;
-	return undef unless defined ($row);
+	return undef unless defined $row;
 	my @cols = $self->get_column_names;
 	my %result = map { $_ => shift(@{$row}) } @cols;
 	return \%result;
+}
+
+# Retrieve and store remaining rows
+sub spool {
+	my $self = shift;
+	return undef unless $self->{wire};
+	$self->{wire}->_retrieve_results($self);
+	return undef;
 }
 
 # Retrieve and dispose of remaining rows
 sub flush {
 	my $self = shift;
 	while ($self->next_array) {};
+	return undef;
 }
 
 # Get the number of columns
@@ -1355,6 +1342,37 @@ sub get_no_of_columns {
 sub get_column_names {
 	my $self = shift;
 	return map { $_->{column} } @{$self->{column_info}};
+}
+
+# Did the query return a set of results or not
+sub has_results {
+	my $self = shift;
+	return $self->get_no_of_columns ? 1 : 0;
+}
+
+# Get the number of affected rows
+sub get_no_of_affected_rows {
+	my $self = shift;
+	return $self->{no_of_affected_rows};
+}
+
+# Get the number of selected rows
+sub get_no_of_selected_rows {
+	my $self = shift;
+	return 0 unless defined $self->{row_data};
+	return scalar(@{$self->{row_data}});
+}
+
+# Get the insert id
+sub get_insert_id {
+	my $self = shift;
+	return $self->{insert_id};
+}
+
+# Get the number of warnings
+sub get_warning_count {
+	my $self = shift;
+	return $self->{warnings};
 }
 
 
@@ -1382,23 +1400,24 @@ sub encode_my_uint {
 	return substr(pack('V', $uint), 0, $wirelen);
 }
 
-# Decode a wire protocol unsigned integer of given length and advance buffer pointer.
+# Decode a wire protocol unsigned integer at given offset and length and advance buffer pointer.
 sub decode_my_uint {
 	my $buf = shift;
 	my $pos = shift;
-	my $bytes = shift;
-	my $result = 0;
+	my $nrbytes = shift;
 
-	for (my $i = 0; $i < $bytes; $i++) {
-		my $byte = unpack('C', substr($buf, $$pos++, 1));
-		$result += $byte << ($i * 8);
-		# Check for values that does not fit in the running Perl interpreter's native integer type.
-		if (($i > 3) && $byte && (sprintf("%d", $result) <= 0)) {
-			# TODO: Does a Perl interpreter with suppot for 64-bit unsigned exist?
-			#       Another solution could be to use the somewhat slow Math::BigInt.
-			die "Overflow while reading an $bytes byte integer.  Try using a Perl interpreter with support for larger integers.";
-		}
+	my @bytes = unpack('x' . $$pos . 'C' x $nrbytes, $buf);
+	my $result = 0;
+	for (my $i = 0; $i < $nrbytes; $i++) {
+		$result += $bytes[$i] << ($i * 8);
 	}
+	$$pos += $nrbytes;
+
+	return $result if $nrbytes <= Net::Wire10::MAX_UINT_SIZE;
+
+	die 'Overflow while reading a large integer' if
+		($nrbytes > Net::Wire10::MAX_UINT_SIZE + 1) or
+		($bytes[-1] > 0x7f);
 
 	return $result;
 }
@@ -1421,7 +1440,7 @@ sub decode_lcb {
 	return decode_my_uint($buf, $pos, UINT24_LENGTH) if $head == LCB_UINT24;
 	return decode_my_uint($buf, $pos, UINT64_LENGTH) if $head == LCB_UINT64;
 	# If we end up here, first byte equals 255, which is invalid.
-	die "Invalid First-Byte in Length Coded Binary: 255";
+	die 'Invalid First-Byte in Length Coded Binary: 255';
 }
 
 # Get string and seek to the position after it
@@ -1461,38 +1480,45 @@ sub skip_string {
 	return undef;
 }
 
+# Note: The manual does not specify how the server handles small comments
+#       terminating in CR, NEL, VT, FF, LS or PS.  Only LF is recognized
+#       below (a guess).
+# Note: The manual states that small comments initiated with -- must be
+#       followed by a whitespace or similar such that an arithmetic double
+#       minus is not mistaken for a comment, but it does not specify exactly
+#       which characters are permitted.  ASCII contol characters and the space
+#       character are recognized below (a guess).
+# Note: The manual does not indicate whether ? tokens are allowed inside
+#       conditional code such as /*!...*/.  In the expression below
+#       it is not allowed (a guess).
+my $splitexp = qr/
+	# capture each part, which is either:
+	(
+		# small comment in double-dash or
+		--[[:cntrl:]\ ].*(?:\n|\z) |
+		# small comment in hash or
+		\#.*(?:\n|\z) |
+		# big comment in C-style or version-conditional code or
+		\/\*(?:[^\*]|\*[^\/])*(?:\*\/|\*\z|\z) |
+		# single-quoted literal text or
+		'(?:[^'\\]*|\\(?:.|\n)|'')*(?:'|\z) |
+		# double-quoted literal text or
+		"(?:[^"\\]*|\\(?:.|\n)|"")*(?:"|\z) |
+		# schema-quoted literal text or
+		`(?:[^`]*|``)*(?:`|\z) |
+		# else it is either sql speak or
+		(?:[^'"`\?\#\-\/]|\/[^\*]|-[^-]|--(?=[^[:cntrl:]\ ]))+ |
+		# bingo: a ? placeholder
+		\?
+	)
+/x;
+
 # Split a MySQL-specific SQL string into parts,
 # looking for '?' prepared statement placeholders.
 sub tokenize {
 	my $query = shift;
 
-	# TODO: Compile the regexp using qr//.
-	# TODO: Find out how the server handles small comments
-	#       terminating in CR, NEL, VT, FF, LS or PS.  Only
-	#       LF is currently recognized below.
-	# TODO: Separate whitespace and SQL tokens; LIMIT
-	#       requires special escaping of parameters.
-	my @tokens = $query =~ m/
-		# capture each part, which is either:
-		(
-			# small comment in double-dash or
-			--.*(?:\n|\z) |
-			# small comment in hash or
-			\#.*(?:\n|\z) |
-			# big comment in C-style or
-			\/\*(?:[^\*]|\*[^\/])*(?:\*\/|\*\z|\z) |
-			# single-quoted literal text or
-			'(?:[^'\\]*|\\[.\n]|'')*(?:'|\z) |
-			# double-quoted literal text or
-			"(?:[^'\\]*|\\[.\n].|'')*(?:"|\z) |
-			# schema-quoted literal text or
-			`(?:[^`]*|``)*(?:`|\z) |
-			# else it is either sql speak or
-			(?:[^'"`\?\#\-\/]|\/[^\*]|-[^-])+ |
-			# bingo: a ? placeholder
-			\?
-		)
-	/gx;
+	my @tokens = $query =~ m/$splitexp/g;
 
 	# Assertion to ensure that bugs get caught; it's a bug
 	# if the above regexp does not capture all of the query.
@@ -1732,8 +1758,7 @@ Net::Wire10 implements the low-level network protocol, alias the MySQL wire prot
   printf "Affected rows: %d\n", $wire->get_no_of_affected_rows;
 
   # SELECT example
-  $wire->query("SELECT * FROM foo");
-  my $results = $wire->create_result_iterator;
+  my $results = $wire->query("SELECT * FROM foo");
   while (my $row = $results->next_hash) {
     printf
       "Id: %s, Message: %s\n",
@@ -1793,13 +1818,9 @@ For additional parameters, refer to L<new>.
 
 =head2 Example: retrieve data
 
-For retrieving results, you need to create an iterator:
-
-  $wire->query(
+  my $results = $wire->query(
     "SELECT id, message FROM foo"
   );
-
-  my $results = $wire->create_result_iterator;
 
 Data is traversed in a row-by-row fashion.  To retrieve each row of data, call next_hash() or next_array():
 
@@ -1831,7 +1852,7 @@ Creates a new driver instance using the specified parameters.
   use warnings;
 
   # Connect to Sphinx server on localhost
-  my $wire_tcp = Net::Wire10->new(
+  my $wire = Net::Wire10->new(
       host       => 'localhost',
       port       => 3307,
       user       => 'test',
@@ -1894,21 +1915,21 @@ After connecting, a ping() is useful to ensure that the connection is still aliv
 
 The query() method transmits the specified SQL string to the server and obtains the response, including the full set of results.
 
-A result set can be obtained with create_resultset_iterator().  The obtained result set will be disconnected from the driver.  Being disconnected means that after retrieving the result set, you can fire more queries or close the connection.
+A result set is returned.  The obtained result set will be disconnected from the driver.  Being disconnected means that after retrieving the result set, you can fire more queries or close the connection.
 
-Use query() if you want a small amount of records that you can use at an arbitrary later point in time.  If you want to stream data to a live result set, including large amounts of data, see stream().
+Use query() when a small amount of records is needed for use at an arbitrary later point in time.  If you want to stream data to a live result set, including large amounts of data, see stream().
 
 =head3 stream
 
 The stream() method transmits the specified SQL string to the server, and obtains initial information about the response, but does not begin downloading data.
 
-A result set can be obtained with create_resultset_iterator().  The obtained result set will be live with the driver.  After retrieving the result set, you must traverse all of its rows before you can fire another query using the driver it is associated with.
+A result set is returned.  The obtained result set will be live with the driver.  After retrieving the result set, you must traverse all of its rows before you can fire another query.
 
 Use stream() for large result sets, as it has a smaller memory footprint compared to query().  If you want to download data to a disconnected result set, use query().
 
 Note that stream() will lock the driver until the whole result set has been retrieved.  To fetch another set of results while streaming to a live result set, create another driver object.
 
-Also note that if you are using MySQL with the default storage engine, MyISAM, the entire table on the server will be locked for the duration of the live result set, that is until all rows has been retrieved.
+Also note that if you are using MySQL with the default storage engine, MyISAM, the entire table on the server will be locked for the duration of the live result set, that is until all rows have been retrieved.
 
 =head3 cancel (thread safe)
 
@@ -1928,19 +1949,6 @@ Run the example above to see how cancel() works to interrupt the SLEEP(10) state
 
 Another common way to kill a running query is to create another connection to the server, if possible, and use KILL QUERY (or KILL CONNECTION for older servers).  Using the KILL commands require a number of things, for example that the server has available connection slots, server privileges, etc.
 
-=head3 has_results
-
-Returns true if the previous query returned a set of results.  When the return value is true, create_result_iterator() can be used to traverse the results.
-
-=head3 create_result_iterator
-
-When a type of SQL query is specified that returns a result set, eg. a SELECT type query, a Net::Wire10::Results object can be used to traverse the results.
-
-    $wire->query("SELECT * FROM foo");
-    my $results = $wire->create_result_iterator();
-
-See L</Features in the Net::Wire10::Results iterator> for more.
-
 =head3 is_connected
 
 Returns true after connect() has been called, for as long as no fatal errors has occurred.
@@ -1951,26 +1959,6 @@ After a fatal error, a successful call to connect() causes is_connected to retur
 
 Returns true if an error code and message is available from the server or the driver.
 
-=head3 get_no_of_affected_rows
-
-Returns the number of rows influenced by the UPDATE, DELETE or similar query.
-
-  my $affected = $wire->get_no_of_affected_rows;
-
-=head3 get_no_of_selected_rows
-
-Returns the number of rows in the result set of a SELECT or similar query.  Supported only for disconnect result sets, live/streaming result sets are unaware of the total number of records.
-
-  my $selected = $wire->get_no_of_selected_rows;
-
-=head3 get_insert_id
-
-MySQL and Drizzle has the ability to choose unique key values automatically, by enabling auto_increment for a column. When this happens, the newly assigned id value for the last inserted row is stored in this attribute.
-
-=head3 get_server_status
-
-After a query, this returns various status flags from the server.  If the query is streaming to a live result set, the status information is available after the last row of data has been read.
-
 =head3 get_server_version
 
 After connecting, this returns the server version.
@@ -1979,9 +1967,7 @@ After connecting, this returns the server version.
 
 After connecting, this returns a unique identifier for the thread on the server that handles the current connection.
 
-=head3 get_warning_count
-
-After a query, this returns the number of warnings generated on the server.  If the query is streaming to a live result set, the warning count is available after the last row of data has been read.
+The connection identifier is useful for logging and debugging, killing queries or connections, for naming pseudo-temporary tables or other objects, and more.
 
 =head3 disconnect
 
@@ -1989,7 +1975,7 @@ Transmits a goodbye message to the server to indicate intentions, then closes th
 
 =head2 Features in the I<Net::Wire10::Results> iterator
 
-A Net::Wire10::Results object is created by calling create_result_iterator().  Depending on whether query() or stream() was used to execute the SQL, create_result_iterator() will return either a disconnect result set or a live (streaming) result set.
+A Net::Wire10::Results object is returned when calling query() or stream().  Depending on which was used to execute the SQL, either a disconnected result set or a live (streaming) result set is returned.
 
 =head3 next_array
 
@@ -2008,6 +1994,8 @@ When the retrieved columns has been specifically named in the SELECT statement (
 
 Column name and order for a C<SELECT *> query can be retrieved using get_column_names().
 
+After calling next_array(), the row has been consumed.  There is currently no way to rewind and re-read a row, even for a disconnected result set.
+
 =head3 next_hash
 
 The next_hash() method returns a whole row, with individual field values packed into a hash.  The key of the hash is the name of the column that each field belongs to.
@@ -2023,6 +2011,12 @@ C<undef> is returned once all rows has been extracted.
 
 Using next_hash() instead of next_array() usually makes the code a bit more readable, especially in cases where a SELECT with column names is not nearby.
 
+After calling next_hash(), the row has been consumed.  There is currently no way to rewind and re-read a row, even for a disconnected result set.
+
+=head3 spool
+
+Reads the remaining rows of the result set, in effect turning a streaming result set into a disconnected result set.
+
 =head3 flush
 
 Reads the remaining rows of the result set and discards them.  When done on a live result set, this frees the driver for use.
@@ -2035,10 +2029,44 @@ Returns the number of columns in the set of results.
 
 Return the names of the result set's columns as an array.
 
+=head3 has_results
+
+Returns true if the query returned a set of results.
+
+=head3 get_no_of_affected_rows
+
+Returns the number of rows influenced by the UPDATE, DELETE or similar query.
+
+  my $affected = $wire->get_no_of_affected_rows;
+
+=head3 get_no_of_selected_rows
+
+Returns the number of rows in the result set of a SELECT or similar query.
+
+  my $selected = $wire->get_no_of_selected_rows;
+
+After consuming a row, the number of available rows will decrease, and get_no_of_selected_rows() will return one less.
+
+Supported only for disconnected result sets, live/streaming result sets are unaware of the total number of records.  A streaming result set can be turned into a disconnected result set using spool(), after which the number of available rows becomes known.
+
+=head3 get_insert_id
+
+MySQL and Drizzle has the ability to choose unique key values automatically, by enabling auto_increment for a column.  When this happens, the newly assigned id value for the last inserted row is stored in this attribute.
+
+=head3 get_warning_count
+
+After a query, this returns the number of warnings generated on the server.  If the query is streaming to a live result set, an additional warning count is available after the last row of data has been read.
+
 =head2 Error handling features
 
 There are two kind of errors in Net::Wire10, fatal and non-fatal errors.
 Fatal errors causes the connection to close, while non-fatal errors do not.
+
+Non-fatal errors cause the active query to abort.
+
+A query may also cause warnings and informational messages, these are per
+default only reported summarily via get_warning_count().  The actual messages
+can be retrieved out-of-band from the server with the SHOW WARNINGS command.
 
 =head3 catching errors
 
@@ -2121,6 +2149,27 @@ In the above, some job is run once every 5 minutes.  Before the job is run, the 
 These are much superior approaches to automatically reconnecting before firing each query (which some other drivers do).  Automatic reconnect schemes hides error messages, looses connection state, drops transactions, can cause half a transaction to complete, can cause table locks to be silently dropped, and similar malfunctions.
 
 If you really want, you can amend the driver object with an extra version of query() (give it a different name) that automatically reconnects, or you can wrap the entire driver in your own object to the same effect, but I much recommend against it.  Proper guard blocks, with a connection check at the beginning (as above), is a much healthier practice.
+
+=head3 retrieving warnings
+
+Here's an example of how to retrieve warnings generated by the server.
+
+  # Random query that emits a warning
+  my $sql = "SELECT CAST('abc' AS CHAR(1))";
+
+  # Run query on an existing connection
+  my $res = $wire->query($sql);
+
+  # Check for warnings
+  if ($res->get_warning_count > 0) {
+	my $warnings = $wire->query("SHOW WARNINGS");
+    while (my $msg = $warnings->next_hash) {
+      printf
+        "Code: %d, Message: %s",
+        $msg->{Code},
+        $msg->{Message};
+    }
+  }
 
 =head1 TROUBLESHOOTING
 
@@ -2242,17 +2291,49 @@ Integrated support would be desirable because of simpler error handling and the 
 
 =head3 Server-side prepared statements
 
-Server-side prepared statements would be very nice to have, but are currently not implemented.  The protocol details are described in the manual.
+The protocol design includes protocol-level support for server-side prepared statements.  When implemented at a protocol level, these are faster than regular statements.  Prepared statements execute faster because query parameters such as text does not need to be quoted before being sent to the server, and are not unquoted when arriving at the server.
+
+In addition to a performance boost, separating query logic and parameters is also beneficial in securing against SQL injections.  Because query parameters do not have to be manually quoted in a correct fashion, there's no longer a risk of forgetting to quote or using an insecure quoting mechanism.  This is true for both server-side and client-side prepared statements.
+
+For very secure applications, it may be desirable to be able to guarantee against SQL injections.  This can be done by blocking queries where parameters have unintentionally been mixed into the query logic.  The Net::Wire10::Util::tokenize() method is useful for this, because it detects all quoted literal strings inside an SQL query.  After tokenizing a query to be prepared, all parts that begin with either a single or double apostrophe are literal parameters that should not have been part of the logic, but given as parameters instead.
+
+Database and database object names cannot be parameterized.  The server does not support question mark placeholders for identifiers.  Always quote identifiers, especially when they're assembled from user-supplied data, with Net::Wire10::Util::quote_identifier().
+
+Another performance benefit of prepared queries is that it is possible to perform multiple executions of the same query.  The query logic is sent and parsed only once, saving a bit of network bandwidth and CPU cycles.
+
+The current protocol design does not allow you to clear a single parameter at a time, but forces you to clear all parameters at once.  When reusing a prepared statement for multiple executions, parameters that do not change from one execution to the next cannot be kept and has to be resent to the server for each execution of the query.  This inefficiency in the design of the protocol can in some cases be alleviated somewhat with a workaround involving user variables.
+
+Some drivers do not pipeline the prepare, parameter, execute and deallocate steps, instead waiting for a response from the server after each step.  Such drivers may actually run some queries slower when using prepared statements.
+
+A detail in the protocol specification is that results from non-prepared statements are pushed to the client, whereas results from prepared statements are pulled by the client.  The pull mechanism makes it possible to stop in the middle of a result set and cancel receiving any more rows.
+
+Another, related detail in the protocol specification is that prepared statements are assigned a number each, whereas non-prepared statements are not.  Multiple prepared statements can therefore be active, running over the same connection at the same time, while only one non-prepared statement can be running at any one time.
+
+In short, server-side prepared statements would be very nice to have, but are currently not implemented.  Protocol details are described in the manual, but with holes in the documentation.
+
+There is also a purely SQL-driven interface to prepared statements, using the PREPARE, EXECUTE and DEALLOCATE PREPARE commands.  The SQL-driven interface does not have the same performance benefits as the protocol-level one does.  It can however be useful for assembling SQL statements on the fly inside stored procedures and for checking SQL queries for correct syntax and identifiers without actually running the query.
 
 =head3 High-granularity streaming
 
 Streaming data along the way as it is consumed or delivered by the client application can lead to dramatical decreases in memory usage.
 
-Streaming outgoing data could be accomplished with server-side prepared statements, because the wire protocol allows prepared statement parameters to be sent one at a time, and even in chunks.  (See above.)
+Streaming outgoing data can be accomplished with server-side prepared statements, because the wire protocol allows prepared statement parameters to be sent one at a time, and even in chunks.  Chunking data presumably allows you to interleave data to different fields when sending a row to the server.  (See also L<Server-side prepared statements>.)
 
-The driver API currently allows client applications to stream incoming data one row at a time using the iterator.  The highest supported granularity for streaming is one whole row at a time.  Streaming at a higher granularity is not part of the current protocol design.
+The driver API currently allows client applications to stream incoming data one row at a time.  The highest supported granularity for streaming is one whole row at a time.  Streaming at a higher granularity and interleaving chunks of incoming data is not part of the current protocol design.
 
-Streaming incoming data in a row-by-row fashion is also known in other drivers as "use_result mode".
+Streaming incoming data in a row-by-row fashion is also known in some drivers as "use_result mode".
+
+=head3 Server-side cursors
+
+Cursors provide a way of keeping open, navigating and optionally modifying a result set on the server, rather than having to transfer the entire result set to the client.
+
+MySQL Server supports only a particular class of cursors known as read-only, forward-only cursors.  As the name implies, this kind of cursor cannot be navigated (also called "scrolled") or modified.
+
+The semantics are exactly the same as when streaming incoming data with the L<stream>() call.  With cursors however, the server automatically creates a temporary table behind the scenes from which the data is read, thereby always using extra resources for a temporary table, but consequently also releasing locks on original tables as soon as possible.
+
+There is also a purely SQL-driven interface to cursors, which can be useful inside stored procedures.
+
+Server-side cursors are part of the server-side prepared statement protocol feature (see above), and are therefore currently not supported.
 
 =head3 Multiple statements per query
 
@@ -2329,12 +2410,15 @@ First, add a BASE64 decoder to MySQL Server, for example using this stored proce
     $wire->query("LOAD DATA INFILE '/tmp/upload.csv' INTO TABLE $table");
 
     # Reclaim disk space used by temporary file.
+    # (Prohibited by some servers for security reasons; use an alternative method.)
     $wire->query("SELECT '' INTO DUMPFILE '/tmp/upload.csv'");
   }
 
 When a similar solution was benchmarked, the performance was identical to a client-side version using the LOCAL feature (tested using the C API).
 
-Be careful to escape data in the CSV file.  MySQL Server does not use the same CSV format as various Office applications.  One difference is that backslashes in CSV data are considered escape characters by MySQL Server.
+Be careful to escape data in the CSV file.  MySQL Server does not use the same CSV format as the de facto standard format use by Office applications.  One difference is that backslashes in CSV data are considered escape characters by MySQL Server.
+
+When bulk loading data, it can be useful to temporarily disable keys with ALTER TABLE ... DISABLE KEYS, and/or to wrap the entire operation inside a transaction.
 
 =head3 The DELIMITER client statement
 
