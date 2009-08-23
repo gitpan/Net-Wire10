@@ -1,4 +1,4 @@
-﻿package Net::Wire10;
+package Net::Wire10;
 
 use strict;
 use warnings;
@@ -16,11 +16,14 @@ use constant {
 	DEFAULT_FLAGS        => 0,
 };
 
-$VERSION = '1.01';
+$VERSION = '1.02';
 
 use constant STREAM_BUFFER_LENGTH => 65536;
 use constant MACKET_HEADER_LENGTH => 4;
 use constant TIMEOUT_GRANULARITY => 1;
+
+use base 'Exporter';
+our @EXPORT = qw(DATA_TEXT DATA_BINARY);
 
 BEGIN {
 	package Net::Wire10;
@@ -122,13 +125,18 @@ BEGIN {
 		210 => 'UTF8_HUNGARIAN_CI',
 	);
 
+	our %DATA_TYPES = (
+		0 => 'TEXT',
+		1 => 'BINARY',
+	);
+
 	# Enumerations that are currently not included here:
 	#  * Server capabilities
 	#  * Server language
 	#  * Server status
 	#  * Server error code
 	#  * Server error state
-	#  * Data types
+	#  * SQL data types
 	#  * Column flags
 	#  * Collations (complete)
 
@@ -168,12 +176,14 @@ BEGIN {
 	_make_constant(\%COMMAND_NAMES, "COMMAND_");
 	_make_constant(\%FLAG_NAMES, "FLAG_");
 	_make_constant(\%UTF8_COLLATIONS, "");
+	_make_constant(\%DATA_TYPES, "DATA_");
 }
 
 my %MACKET_NAMES = %{*MACKET_NAMES};
 my %COMMAND_NAMES = %{*COMMAND_NAMES};
 my %FLAG_NAMES = %{*FLAG_NAMES};
 my %UTF8_COLLATIONS = %{*UTF8_COLLATIONS};
+my %DATA_TYPES = %{*DATA_TYPES};
 
 # Constructor
 sub new {
@@ -208,33 +218,25 @@ sub connect {
 # Sends an SQL query
 sub query {
 	my $self = shift;
-	my $sql = join '', @_;
+	my $sql = shift;
 
-	$self->_check_streaming;
-	$self->_check_connected;
-	$self->_reset_command_state;
-	$self->_reset_timeout;
-
-	my $iterator = Net::Wire10::Results->new($self);
-	$self->_execute_command(COMMAND_QUERY, $sql, $iterator);
-	return $iterator;
+	return $self->_execute_query($sql, 0);
 }
 
 # Sends an SQL query, but does not read any rows in the result set
 sub stream {
 	my $self = shift;
-	my $sql = join '', @_;
+	my $sql = shift;
 
-	$self->_check_streaming;
-	$self->_check_connected;
-	$self->_reset_command_state;
-	$self->_reset_timeout;
-	$self->{streaming} = 1;
+	return $self->_execute_query($sql, 1);
+}
 
-	my $iterator = Net::Wire10::Results->new($self);
-	$self->{streaming_iterator} = $iterator;
-	$self->_execute_command(COMMAND_QUERY, $sql, $iterator);
-	return $iterator;
+# Creates a prepared statement object.
+sub prepare {
+	my $self = shift;
+	my $sql = shift;
+
+	return Net::Wire10::PreparedStatement->new($self, $sql);
 }
 
 # Sends a wire protocol ping
@@ -245,6 +247,7 @@ sub ping {
 	$self->_check_connected;
 	$self->_reset_command_state;
 	$self->_reset_timeout;
+
 	return $self->_execute_command(COMMAND_PING, '', undef);
 }
 
@@ -567,11 +570,11 @@ sub _derive_received_macket_type {
 		return $macket->{type} = MACKET_ERROR;
 	}
 
-	if ($self->_extract_macket_length($macket) < 9 && ord(substr($macket->{buf}, MACKET_HEADER_LENGTH, 1)) == 0xFE) {
+	if ((length($macket->{buf}) < MACKET_HEADER_LENGTH + 9) && (ord(substr($macket->{buf}, MACKET_HEADER_LENGTH, 1)) == 0xFE)) {
 		return $macket->{type} = MACKET_EOF;
 	}
 
-	if (ord(substr($macket->{buf}, MACKET_HEADER_LENGTH, 1)) == 0) {
+	if ((ord(substr($macket->{buf}, MACKET_HEADER_LENGTH, 1)) == 0) && (length($macket->{buf}) > MACKET_HEADER_LENGTH + 5)) {
 		return $macket->{type} = MACKET_OK;
 	}
 
@@ -607,10 +610,11 @@ sub _send_mackets {
 	my $len = length($body);
 	my $pos = 0;
 
-	while ($len > 0) {
+	while ($len >= 0) {
 		# The server terminates the connection if the fragmented mackets
 		# (except the last, of course) are not 0xffffff bytes long.
 		my $chunk_len = $len > 0xffffff ? 0xffffff : $len;
+		$len = -1 if ($len == 0) or ($chunk_len < 0xffffff);
 		$len -= $chunk_len;
 
 		my $head_len = Net::Wire10::Util::encode_my_uint($chunk_len, 3);
@@ -661,14 +665,17 @@ sub _perform_handshake {
 
 	$i += 1;
 	# Server version
-	my $string_end = index($macket->{buf}, "\0", $i) - $i;
+	my $string_end = index($macket->{buf}, "\0", $i);
+	$self->_fatal_error("Could not decode server version.\n") if $string_end == -1;
+	$string_end -= $i;
 	$self->{server_version} = substr $macket->{buf}, $i, $string_end;
 	printf "Server version: %s\n", $self->{server_version} if $self->{debug} & 1;
 	$i += $string_end + 1;
+	my $left = length($macket->{buf}) - $i;
+	$self->_fatal_error("Server handshake message truncated.\n") if $left < 44;
 	# Server thread id
-	$self->{server_thread_id} = unpack 'v', substr $macket->{buf}, $i, 4;
+	$self->{server_thread_id} = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$i, 4);
 	printf "Server thread id: %d\n", $self->{server_thread_id} if $self->{debug} & 1;
-	$i += 4;
 	# Scramble buff, 1st part
 	$self->{salt} = substr $macket->{buf}, $i, 8;
 	# Enables the use of old passwords
@@ -762,7 +769,7 @@ sub _send_login_message {
 	# which just overflows macket data onto other mackets when
 	# sending and accepts overflowed data when receiving.
 	# See also note in _send_mackets().
-	$body .= Net::Wire10::Util::encode_my_uint(0xffffffff, 4);
+	$body .= Net::Wire10::Util::encode_my_uint(0x01000000, 4);
 	# Character set; hardcoded to UTF-8, used in _parse_column_info_macket().
 	$body .= chr(UTF8_GENERAL_CI);
 	# 23 bytes filler.
@@ -795,27 +802,47 @@ sub _send_old_password {
 }
 
 # Execute a SQL command
+sub _execute_query {
+	my $self = shift;
+	my $sql = shift;
+	my $wantstream = shift;
+
+	$self->_check_streaming;
+	$self->_check_connected;
+	$self->_reset_command_state;
+	$self->_reset_timeout;
+	$self->{streaming} = 1 if $wantstream;
+
+	my $iterator = Net::Wire10::Results->new($self);
+	$self->{streaming_iterator} = $iterator if $wantstream;
+
+	# The protocol is configured to always use UTF-8 during handskake, to
+	# avoid messing with all the local character sets.  Therefore any input
+	# string needs to be automatically converted if it is not already UTF-8.
+	utf8::upgrade($sql) if defined($sql) and not utf8::is_utf8($sql);
+
+	printf "Executing query: %s%s\n", substr($sql, 0, 100), length($sql) >= 100 ? " ..." : "" if $self->{debug} & 1;
+
+	$self->_execute_command(COMMAND_QUERY, $sql, $iterator);
+	return $iterator;
+}
+
+# Send a protocol command message
 sub _execute_command {
 	my $self = shift;
 	my $command = shift;
-	my $sql = shift;
+	my $param = shift;
 	my $iterator = shift;
-
-	# Internal representation of input data is expected to be in UTF-8;
-	# automatically convert if it's not.
-	utf8::upgrade($sql) if not utf8::is_utf8($sql);
-
-	printf "Executing query: %s%s\n", substr($sql, 0, 100), length($sql) >= 100 ? " ..." : "" if $self->{debug} & 1;
 
 	# Abort early if the driver is no longer connected.
 	$self->_check_connected;
 
 	# Strip the utf8 flag from the string,
 	# otherwise the socket send() complains.
-	Encode::_utf8_off($sql);
+	Encode::_utf8_off($param);
 
 	# Send the SQL command
-	my $body = $command . $sql;
+	my $body = $command . $param;
 	$self->_send_mackets($body, 0, MACKET_COMMAND);
 	$self->{expected_macket} = MACKET_OK | MACKET_RESULT_SET_HEADER;
 
@@ -847,7 +874,7 @@ sub _parse_result_set_header_macket {
 	$self->{no_of_columns} = $self->_decode_lcb_or_fail($macket->{buf}, $pos);
 	printf "Number of columns: %d\n", $self->{no_of_columns} if $self->{debug} & 1;
 	# Optionally the "extra" field is in the macket
-	my $macket_length = $self->_extract_macket_length($macket);
+	my $macket_length = length($macket->{buf}) - MACKET_HEADER_LENGTH;
 	if ($macket_length - 1 > $pos) {
 		my $extra = $self->_decode_lcb_or_fail($macket->{buf}, $pos);
 		printf "Extra information (ignored): %d\n", $extra if $self->{debug} & 1;
@@ -867,6 +894,7 @@ sub _parse_error_macket {
 	my $pos = MACKET_HEADER_LENGTH;
 	# skip macket type
 	$pos += 1;
+	$self->_fatal_error("Truncated error macket") if length($macket->{buf}) < 2;
 	# error code
 	$self->{error_code} = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
 	# Documentation says there always is a SQLSTATE marker here,
@@ -937,17 +965,27 @@ sub _retrieve_row_data {
 		$self->_fatal_error("Server reported error while reading row data: ".$self->{error_message});
 	}
 	if ($macket->{type} == MACKET_ROW_DATA) {
-		my $nasty = $self->_field_value_exceeds_buffer($macket->{buf}, MACKET_HEADER_LENGTH);
-		while ($nasty > 0) {
+		# Note: The manual does not specify how the server fragments data.
+		# One possibility would be that if the server sends data that fits
+		# exactly on a macket boundary, then sends an additional completely
+		# empty macket, to allow the client to assume that a maxed out macket
+		# means that more fragments will follow.  Another possibility would
+		# be that the server expects the client to deduce whether more mackets
+		# are coming based on the contents of each macket, since fragmented
+		# mackets only occur for data mackets which have an additional length
+		# indicator (for the field data) inside the macket.  For the usual
+		# lack of documentation, the method used below is a guess.
+		my $nasty = length($macket->{buf});
+		while ($nasty == MACKET_HEADER_LENGTH + 0xffffff) {
 			# Glue together to form proper macket
 			# (with invalid macket_length).
-			printf "Fragmented macket found: field value exceeds macket by %d bytes.  Retrieving one more fragment macket.\n", $nasty if $self->{debug} & 1;
+			printf "Fragmented macket found, retrieving one more fragment macket.\n" if $self->{debug} & 1;
 			$self->{expected_macket} = MACKET_MORE_DATA;
 			my $next_macket = $self->_next_macket;
 			if ($macket->{type} == MACKET_ERROR) {
 				$self->_fatal_error("Server reported error while reading more row data: ".$self->{error_message});
 			}
-			$nasty = $self->_field_value_exceeds_buffer($next_macket->{buf}, MACKET_HEADER_LENGTH + $nasty);
+			$nasty = length($next_macket->{buf});
 			# Remove header from next fragment.
 			substr($next_macket->{buf}, 0, MACKET_HEADER_LENGTH, "");
 			# Concatenate macket contents.
@@ -998,6 +1036,7 @@ sub _parse_ok_macket {
 	# Insert id
 	my $id = $self->_decode_lcb_or_fail($macket->{buf}, \$pos);
 	printf "Insert id: %d\n", $id if $self->{debug} & 1;
+	$self->_fatal_error("Truncated OK macket") if length($macket->{buf}) < 4;
 	# Server status
 	my $status = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
 	printf "Server status flags (ignored): 0x%x\n", $status if $self->{debug} & 1;
@@ -1021,6 +1060,7 @@ sub _parse_eof_macket {
 	my $iterator = shift;
 
 	my $pos = MACKET_HEADER_LENGTH + 1;
+	$self->_fatal_error("Truncated EOF macket") if length($macket->{buf}) < 4;
 	# Warning count
 	my $warnings = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
 	printf "Warning count: %d\n", $warnings if $self->{debug} & 1;
@@ -1059,6 +1099,7 @@ sub _parse_column_info_macket {
 	Encode::_utf8_on($orig_column);
 	# Filler
 	$pos += 1;
+	$self->_fatal_error("Truncated column info macket") if length($macket->{buf}) < 10;
 	# Charset number
 	my $collation = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
 	# Length
@@ -1072,7 +1113,7 @@ sub _parse_column_info_macket {
 	# Filler
 	$pos += 2;
 	# Optionally the default field is available in the macket
-	my $macket_length = $self->_extract_macket_length($macket);
+	my $macket_length = length($macket->{buf}) - MACKET_HEADER_LENGTH;
 	if ($macket_length - 1 > $pos) {
 		$self->{extra} = $self->_decode_lcb_or_fail($macket->{buf}, \$pos);
 		print "Default (ignored): " . $self->{extra} if $self->{debug} & 1;
@@ -1377,6 +1418,139 @@ sub get_warning_count {
 
 
 
+package Net::Wire10::PreparedStatement;
+
+use strict;
+use warnings;
+use utf8;
+use Encode;
+
+# Constructor
+sub new {
+	my $class = shift;
+	my $wire = shift;
+	my $sql = shift;
+
+	# Input is either iso8859-1 or Unicode, handle as Unicode internally.
+	utf8::upgrade($sql) if defined($sql) and not utf8::is_utf8($sql);
+
+	# Find all "?" placeholders in query.
+	my @tokens = Net::Wire10::Util::tokenize($sql);
+
+	return bless {
+		wire => $wire,
+		tokens => \@tokens,
+		params => [],
+	}, $class;
+}
+
+# Set a parameter at a given index to a given value.
+sub set_parameter {
+	my $self = shift;
+	my $index = shift;
+	my $value = shift;
+	my $datatype = shift || Net::Wire10::DATA_TEXT;
+
+	# If input is iso8859-1 or Unicode, handle as Unicode.
+	utf8::upgrade($value) if defined $value and not (($datatype == Net::Wire10::DATA_BINARY) or utf8::is_utf8($value));
+
+	# Store for later.  Placeholders are numbered beginning with 1.
+	@{$self->{params}}[$index - 1] = $value;
+
+	return undef;
+}
+
+# Clear a parameter at a given index, or all parameters if no index given.
+sub clear_parameter {
+	my $self = shift;
+	my @indices = @_;
+
+	@{$self->{params}} = [] unless scalar @indices > 0;
+	foreach my $index (@indices) {
+		@{$self->{params}}[$index - 1] = undef;
+	}
+
+	return undef;
+}
+
+# Return the number of ? tokens in the prepared statement.
+sub get_marker_count {
+	my $self = shift;
+	return scalar grep(/^\?$/, @{$self->{tokens}});
+}
+
+# See note about split and whitespace in Net::Wire10::Util.
+my $whitespace = qr/^[\ \r\n\v\t\f]$/;
+
+# Probably degrades performance quite a bit, necessary due to server bug:
+# http://bugs.mysql.com/bug.php?id=1337
+my $workaround_bug_1337 = qr/^[0-9]+$/;
+
+# Assemble and execute prepared statement.
+sub _execute {
+	my $self = shift;
+	my $wantstream = shift;
+	my $wire = $self->{wire};
+
+	# Replace tokens with parameters.
+	my $prepared = '';
+	my $i = 0;
+	my $has_charset = 0;
+	foreach my $token (@{$self->{tokens}}) {
+		# Look for a ? token.
+		if ($token ne '?') {
+			$prepared .= $token;
+			# Look for character set associations for upcoming ? tokens.
+			my $first = substr($token, 0, 1);
+			$has_charset = 0 if $first !~ $whitespace;
+			$has_charset = 1 if $first eq '_';
+			# Fast-forward to next token.
+			next;
+		}
+
+		# Fetch and quote parameter, or add NULL for undef.
+		my $value = $self->{params}->[$i++];
+		unless (defined($value)) {
+			$prepared .= 'NULL';
+			next;
+		}
+		$value = Net::Wire10::Util::quote($value) if $value !~ $workaround_bug_1337;
+
+		# If input is binary, tell the database server that it's binary.
+		# It usually doesn't matter much because binary data is usually
+		# used in a binary context anyway, but it fixes various uncommon
+		# scenarios such as doing a CONVERT on a binary string.
+		$prepared .= '_binary' unless utf8::is_utf8($value) or $has_charset;
+
+		# If input is binary, make sure that Perl doesn't try to translate it
+		# from iso8859-1 (which it isn't) to Unicode when the string is joined
+		# with actual Unicode text to form a MySQL query, which is a character
+		# array of mixed text and binary data.
+		Encode::_utf8_on($value) unless utf8::is_utf8($value);
+
+		# Add parameter in place of token.
+		$prepared .= $value;
+	}
+
+	print "Assembled statement: " . $prepared . "\n" if $wire->{debug} & 1;
+	return $wire->stream($prepared) if $wantstream;
+	return $wire->query($prepared);
+}
+
+# Run the prepared statement and spool results.
+sub query {
+	my $self = shift;
+	return $self->_execute(0);
+}
+
+# Run the prepared statement and return a result object for streaming.
+sub stream {
+	my $self = shift;
+	return $self->_execute(1);
+}
+
+
+
 package Net::Wire10::Util;
 
 use strict;
@@ -1391,6 +1565,11 @@ use constant UINT16_LENGTH  => 2;
 use constant UINT24_LENGTH  => 3;
 use constant UINT32_LENGTH  => 4;
 use constant UINT64_LENGTH  => 8;
+my @LCB_LENGTHS             = ();
+$LCB_LENGTHS[LCB_NULL]      = 0;
+$LCB_LENGTHS[LCB_UINT16]    = UINT16_LENGTH;
+$LCB_LENGTHS[LCB_UINT24]    = UINT24_LENGTH;
+$LCB_LENGTHS[LCB_UINT64]    = UINT64_LENGTH;
 
 # Encode a given uint into wire protocol format, return as string of given length.
 sub encode_my_uint {
@@ -1426,7 +1605,10 @@ sub decode_my_uint {
 sub decode_lcb {
 	my $buf = shift;
 	my $pos = shift;
+	my $len = length($buf);
+	my $msg = 'Reached end of input while decoding Length Coded Binary';
 
+	die $msg if $$pos >= $len;
 	my $head = ord substr(
 		$buf,
 		$$pos,
@@ -1436,9 +1618,9 @@ sub decode_lcb {
 
 	return undef if $head == LCB_NULL;
 	return $head if $head < LCB_NULL;
-	return decode_my_uint($buf, $pos, UINT16_LENGTH) if $head == LCB_UINT16;
-	return decode_my_uint($buf, $pos, UINT24_LENGTH) if $head == LCB_UINT24;
-	return decode_my_uint($buf, $pos, UINT64_LENGTH) if $head == LCB_UINT64;
+	my $bytes = $LCB_LENGTHS[$head];
+	die $msg if $$pos + $bytes >= $len;
+	return decode_my_uint($buf, $pos, $bytes) if $head <= LCB_UINT64;
 	# If we end up here, first byte equals 255, which is invalid.
 	die 'Invalid First-Byte in Length Coded Binary: 255';
 }
@@ -1491,7 +1673,10 @@ sub skip_string {
 # Note: The manual does not indicate whether ? tokens are allowed inside
 #       conditional code such as /*!...*/.  In the expression below
 #       it is not allowed (a guess).
-my $splitexp = qr/
+# Note: The manual does not indicate which ASCII and Unicode characters are
+#       considered whitespace.  In the expression below, the ASCII characters
+#       CR, LF, VT, HT, FF and 0x20 are recognized (a guess).
+my $split = qr/
 	# capture each part, which is either:
 	(
 		# small comment in double-dash or
@@ -1500,6 +1685,8 @@ my $splitexp = qr/
 		\#.*(?:\n|\z) |
 		# big comment in C-style or version-conditional code or
 		\/\*(?:[^\*]|\*[^\/])*(?:\*\/|\*\z|\z) |
+		# whitespace
+		[\ \r\n\v\t\f]+ |
 		# single-quoted literal text or
 		'(?:[^'\\]*|\\(?:.|\n)|'')*(?:'|\z) |
 		# double-quoted literal text or
@@ -1507,7 +1694,7 @@ my $splitexp = qr/
 		# schema-quoted literal text or
 		`(?:[^`]*|``)*(?:`|\z) |
 		# else it is either sql speak or
-		(?:[^'"`\?\#\-\/]|\/[^\*]|-[^-]|--(?=[^[:cntrl:]\ ]))+ |
+		(?:[^'"`\?\ \r\n\v\t\f\#\-\/]|\/[^\*]|-[^-]|--(?=[^[:cntrl:]\ ]))+ |
 		# bingo: a ? placeholder
 		\?
 	)
@@ -1518,7 +1705,7 @@ my $splitexp = qr/
 sub tokenize {
 	my $query = shift;
 
-	my @tokens = $query =~ m/$splitexp/g;
+	my @tokens = $query =~ m/$split/g;
 
 	# Assertion to ensure that bugs get caught; it's a bug
 	# if the above regexp does not capture all of the query.
@@ -1554,6 +1741,18 @@ sub quote_identifier {
 	}
 
 	return "`$identifier`";
+}
+
+sub quote_wildcards {
+	my $string = shift;
+	return undef unless defined $string;
+
+	for ($string) {
+		s/%/\\%/g;
+		s/_/\\_/g;
+	}
+
+	return $string;
 }
 
 
@@ -1931,6 +2130,30 @@ Note that stream() will lock the driver until the whole result set has been retr
 
 Also note that if you are using MySQL with the default storage engine, MyISAM, the entire table on the server will be locked for the duration of the live result set, that is until all rows have been retrieved.
 
+=head3 prepare
+
+Given a SQL string, returns a prepared statement.
+
+Prepared statements are useful for:
+
+=over 4
+
+=item Inserting binary data in the database.
+
+For each parameter, an indication of whether the parameter should be considered text or binary data can be given.
+
+=item Avoiding bugs that could lead to SQL injections.
+
+Separating query logic and parameters can be beneficial in securing against SQL injections.  Because query parameters do not have to be manually quoted, there's less risk of forgetting to quote or using an insecure quoting mechanism.
+
+=item Reusing query logic with multiple sets of parameters.
+
+Prepared statements can be re-executed with a new set of parameters.
+
+=back
+
+Database and database object names cannot be parameterized, because schema identifiers need to be escaped in a different way than literal strings, and there is currently no additional marker implemented for this purpose.  Identifiers can be manually quoted using Net::Wire10::Util::quote_identifier().
+
 =head3 cancel (thread safe)
 
 Cancels the running query.  Safe to call asynchronously (thread safe).
@@ -1942,7 +2165,7 @@ Cancels the running query.  Safe to call asynchronously (thread safe).
     $wire->cancel if sleep 2;
   })->detach;
 
-  # run query for 10 seconds (will be interrupted by above thread)
+  # run query for 10 seconds (will be interrupted by above thread after 2 sec)
   query("SELECT SLEEP(10)");
 
 Run the example above to see how cancel() works to interrupt the SLEEP(10) statement before it finishes, after only 2 seconds instead of the full 10.
@@ -2057,6 +2280,42 @@ MySQL and Drizzle has the ability to choose unique key values automatically, by 
 
 After a query, this returns the number of warnings generated on the server.  If the query is streaming to a live result set, an additional warning count is available after the last row of data has been read.
 
+=head2 Features in I<Net::Wire10::PreparedStatement>
+
+=head3 get_token_count
+
+Returns the number of "?" tokens found in the SQL initially used to create the prepared statement.
+
+=head3 set_parameter
+
+Sets the parameter at a given index to a given value.  The index corresponds to the relative position of a "?" marker in the prepared statement, with the first "?" marker being 1.
+
+  $ps->set_parameter(2, 'Hello World');
+
+There is no need to quote the parameter value, this is done automatically.
+
+Binary data such as for example JPEG image files can also be added:
+
+  $ps->set_parameter(3, $bindata, DATA_BINARY);
+
+If the last parameter is specified as DATA_BINARY, the value given is taken as a binary string.  Otherwise, the value is taken as either an iso8859-1 string or a Unicode string, depending on what Perl thinks about the string.
+
+=head3 clear_parameter
+
+Clears one or more parameters, or all parameters if nothing was specified.
+
+  $ps->clear_parameter(1, 3);
+
+=head3 query
+
+Execute the prepared statement using the parameters previously set with set_parameter().
+All results are spooled before the call returns.
+
+=head3 stream
+
+Execute the prepared statement using the parameters previously set with set_parameter().
+As soon as the initial metadata arrives from the database server, the call returns, and the results can be traversed in a streaming fashion.
+
 =head2 Error handling features
 
 There are two kind of errors in Net::Wire10, fatal and non-fatal errors.
@@ -2162,7 +2421,7 @@ Here's an example of how to retrieve warnings generated by the server.
 
   # Check for warnings
   if ($res->get_warning_count > 0) {
-	my $warnings = $wire->query("SHOW WARNINGS");
+    my $warnings = $wire->query("SHOW WARNINGS");
     while (my $msg = $warnings->next_hash) {
       printf
         "Code: %d, Message: %s",
@@ -2195,6 +2454,10 @@ The following features are not supported.
 
 Only protocol version 10 is supported.
 
+There are several revisions of version 10.  The only supported variant is the one described in the protocol documentation.
+
+The documentation (at the time of this writing) covers MySQL Server version 4.1.  It is recommended to use the newest GA server release however, because version 4.1 has a number of Unicode bugs, particularly when using built-in SQL functions for text handling.
+
 =head3 Transports other than TCP/IP
 
 Shared memory is not supported.  Might be easy to add, my guess would be that it's just a ring buffer and one or two locks to synchronize readers and writers.
@@ -2205,65 +2468,33 @@ Unix socket is not supported.
 
 =head3 Character sets other than UTF-8
 
-Only the UTF-8 character set is supported.  Query strings that are not representible in UTF-8 needs special treatment (see below).  Result data is binary strings for binary data and UTF-8 strings for textual data.
+Result data is binary strings for binary data and UTF-8 strings for textual data.  Testing for a text versus a binary result value is accomplished using utf8::is_utf8().
 
-The server considers characters in the query received from the client to be in the character set indicated by the character_set_client variable.  This variable is implicitly set to UTF-8 during login.  Subsequently, the driver automatically converts all query text to UTF-8, making it simple to execute queries without considering the character set.
+SQL queries are given as strings, interpreted as either UTF-8 or iso8859-1 depending on what Perl thinks about the string.  When using prepared statements, binary data is also supported for parameters.  See set_parameter() for details.
 
-The simplest method of circumventing this in order to send binary data to the server is to use a text-to-binary notation such as "0x010203".  For example:
-
-(Note: if the second character in "dæmons" below is not Unicode U+00E6, then the documentation compiler failed to correctly determine the character set of its input files.  For comparison, see L<http://www.fileformat.info/info/unicode/char/00e6/>.)
+It is possible to convert binary data to ASCII hex notation for inclusion directly in the query text:
 
   # Helper that converts binary to ASCII hex notation.
   sub raw_to_hex { return unpack("H*", shift); }
 
-  # Create a demonstration table.
-  $wire->query("CREATE TABLE dæmons (name TEXT, raw BLOB)");
+  # Convert to hex notation.
+  $hex = raw_to_hex($binary_data);
 
-  # Demonstration SQL query and binary data.
-  my $sql = "INSERT INTO dæmons (name, raw) VALUES ('dæmons be here', _binary x'!')";
-  my $bindata = pack("CCCCC", 1, 2, 3, 254, 255);
+  # Run a query containing hex data.
+  my $res = $wire->query("SELECT $hex");
 
-  # Add hex transliteration of the binary data to query
-  # (in place of the ! exclamation mark).
-  my $hex = raw_to_hex($bindata);
-  $sql =~ s/!/$hex/;
+A more economical encoding than hex notation is BASE64.  If the server does not support BASE64 natively, a decoder can be added using for example this stored procedure: L<http://wi-fizzle.com/downloads/base64.sql>.
 
-  # Run the query.
-  $wire->query($sql);
+  # Contains helper that converts binary to BASE64 notation.
+  use MIME::Base64 qw(encode_base64);
 
-A more economical encoding than hex notation would be to use BASE64, although the server may not support this natively.
+  # Convert to BASE64 notation.
+  my $base64 = encode_base64($binary_data);
 
-Another more complex method exists, which uses less network bandwidth.  It involves stuffing binary data into the query string in raw form.  The server will actually consider any string literal following a "_binary" token to be raw binary data, while the rest of the query is still considered UTF-8.  Thus it is also possible to send raw binary data to the server like this:
+  # Run a query containing BASE64 data.
+  my $res = $wire->query("SELECT BASE64_DECODE('$base64')");
 
-  use Encode;
-
-  # Create a demonstration table.
-  $wire->query("CREATE TABLE dæmons (name TEXT, raw BLOB)");
-
-  # Demonstration SQL query and binary data.
-  my $sql = "INSERT INTO dæmons (name, raw) VALUES ('dæmons be here', _binary '!')";
-  my $bindata = pack("CCCCC", 1, 2, 3, 254, 255);
-
-  # Make sure the SQL is in UTF-8, and the binary data is included untouched.
-  my @parts = split(/!/, $sql);
-  my $raw_query = join('',
-    Encode::encode_utf8($parts[0]),
-    $bindata,
-    Encode::encode_utf8($parts[1])
-  );
-
-  # Tell the driver that the string is already UTF-8'ified,
-  # so it will refrain from automatically upgrading it.
-  Encode::_utf8_on($raw_query);
-
-  # Run the delicately constructed query.
-  $wire->query($raw_query);
-
-This notation works only for string literals.  Schema literals such as table names are always in UTF-8, the server does not accept _binary (or other character set tokens, for that matter) in front of schema literals.
-
-A subtle difference between the two methods is that some servers will not check whether the input is valid UTF-8 if the second method is used, but will check validity if the first method is used.
-
-See also notes on prepared statement support.
+An even more economical method is to use a prepared statement to send the binary data in its raw form.
 
 =head3 Protocol compression via zlib
 
@@ -2271,7 +2502,20 @@ There is not much documentation regarding protocol compression, therefore it has
 
 It is possible to add compression at the network level instead using a tunnel rather than the protocol's own support, similarly to stunnel described below, if network bandwidth is at a premium.
 
-Another option is to selectively compress data with zlib before handing it off to the driver, and using the function DECOMPRESS() to expand the data again once it reaches the server.  See notes on LOAD DATA LOCAL INFILE for an example related to zlib compression.  See notes on character sets for examples related to transmitting binary (eg. compressed) data to the server.
+Another option is to selectively compress data with zlib before handing it off to the driver, and using the function UNCOMPRESS() to expand the data again once it reaches the server:
+
+  # Contains helper that does zlib compression.
+  use Compress::Zlib;
+
+  # Compress some data.
+  my $compressed = compress('Hello World!');
+
+  # Create a prepared statement and bind the compressed data.
+  my $ps = $wire->prepare('SELECT UNCOMPRESS(?)');
+  $ps->set_parameter(1, $compressed, DATA_BINARY);
+
+  # Run the query to decompress data on the server side.
+  $res = $ps->query();
 
 =head3 Verification of authenticity using SSL certificates
 
@@ -2289,19 +2533,13 @@ Stunnel provides a richer set of features than the current MySQL protocol suppor
 
 Integrated support would be desirable because of simpler error handling and the possibility of performing key creation and certificate signing tasks via SQL.
 
-=head3 Server-side prepared statements
+=head3 Protocol-level prepared statements
 
 The protocol design includes protocol-level support for server-side prepared statements.  When implemented at a protocol level, these are faster than regular statements.  Prepared statements execute faster because query parameters such as text does not need to be quoted before being sent to the server, and are not unquoted when arriving at the server.
 
-In addition to a performance boost, separating query logic and parameters is also beneficial in securing against SQL injections.  Because query parameters do not have to be manually quoted in a correct fashion, there's no longer a risk of forgetting to quote or using an insecure quoting mechanism.  This is true for both server-side and client-side prepared statements.
-
-For very secure applications, it may be desirable to be able to guarantee against SQL injections.  This can be done by blocking queries where parameters have unintentionally been mixed into the query logic.  The Net::Wire10::Util::tokenize() method is useful for this, because it detects all quoted literal strings inside an SQL query.  After tokenizing a query to be prepared, all parts that begin with either a single or double apostrophe are literal parameters that should not have been part of the logic, but given as parameters instead.
-
-Database and database object names cannot be parameterized.  The server does not support question mark placeholders for identifiers.  Always quote identifiers, especially when they're assembled from user-supplied data, with Net::Wire10::Util::quote_identifier().
-
 Another performance benefit of prepared queries is that it is possible to perform multiple executions of the same query.  The query logic is sent and parsed only once, saving a bit of network bandwidth and CPU cycles.
 
-The current protocol design does not allow you to clear a single parameter at a time, but forces you to clear all parameters at once.  When reusing a prepared statement for multiple executions, parameters that do not change from one execution to the next cannot be kept and has to be resent to the server for each execution of the query.  This inefficiency in the design of the protocol can in some cases be alleviated somewhat with a workaround involving user variables.
+The current protocol design does not allow you to clear a single parameter at a time, but forces you to clear all parameters at once.  When reusing a prepared statement for multiple executions, parameters that do not change from one execution to the next can therefore not be kept and has to be resent to the server for each execution of the query.  This inefficiency in the design of the protocol can in some cases be alleviated somewhat with a workaround involving user variables.
 
 Some drivers do not pipeline the prepare, parameter, execute and deallocate steps, instead waiting for a response from the server after each step.  Such drivers may actually run some queries slower when using prepared statements.
 
@@ -2309,15 +2547,17 @@ A detail in the protocol specification is that results from non-prepared stateme
 
 Another, related detail in the protocol specification is that prepared statements are assigned a number each, whereas non-prepared statements are not.  Multiple prepared statements can therefore be active, running over the same connection at the same time, while only one non-prepared statement can be running at any one time.
 
-In short, server-side prepared statements would be very nice to have, but are currently not implemented.  Protocol details are described in the manual, but with holes in the documentation.
+In short, protocol-level prepared statements would be very nice to have, but are currently not implemented.  Protocol details are described in the manual, but with gaps in the documentation.
 
 There is also a purely SQL-driven interface to prepared statements, using the PREPARE, EXECUTE and DEALLOCATE PREPARE commands.  The SQL-driven interface does not have the same performance benefits as the protocol-level one does.  It can however be useful for assembling SQL statements on the fly inside stored procedures and for checking SQL queries for correct syntax and identifiers without actually running the query.
+
+There is also a client-side prepared statement interface in the driver, which it is highly recommended to use.
 
 =head3 High-granularity streaming
 
 Streaming data along the way as it is consumed or delivered by the client application can lead to dramatical decreases in memory usage.
 
-Streaming outgoing data can be accomplished with server-side prepared statements, because the wire protocol allows prepared statement parameters to be sent one at a time, and even in chunks.  Chunking data presumably allows you to interleave data to different fields when sending a row to the server.  (See also L<Server-side prepared statements>.)
+Streaming outgoing data can be accomplished with server-side prepared statements, because the wire protocol allows prepared statement parameters to be sent one at a time, and even in chunks.  Chunking data presumably allows you to interleave data to different fields when sending a row to the server.  (See also L<Protocol-level prepared statements>.)
 
 The driver API currently allows client applications to stream incoming data one row at a time.  The highest supported granularity for streaming is one whole row at a time.  Streaming at a higher granularity and interleaving chunks of incoming data is not part of the current protocol design.
 
@@ -2333,7 +2573,7 @@ The semantics are exactly the same as when streaming incoming data with the L<st
 
 There is also a purely SQL-driven interface to cursors, which can be useful inside stored procedures.
 
-Server-side cursors are part of the server-side prepared statement protocol feature (see above), and are therefore currently not supported.
+Server-side cursors are part of the prepared statement protocol features (see above), and are therefore currently not supported.
 
 =head3 Multiple statements per query
 
@@ -2371,14 +2611,8 @@ There is no particular advantage to putting pooling code in the driver core itse
 
 Poorly documented and therefore unsupported.  If necessary, you can emulate the LOAD DATA LOCAL INFILE client statement using two other queries in unison, namely SELECT INTO DUMPFILE and LOAD DATA INFILE.
 
-For optimal network performance, compress the data using zlib before sending it to the driver.
+For optimal network performance, compress the data using zlib before sending it to the driver.  See also notes on compression further above.
 
-Binary data can be sent in raw form via the driver, see notes on character set support.  In some situations it is less complex to send binary data in a BASE64 encoding.  Here's an example that does just that.
-
-First, add a BASE64 decoder to MySQL Server, for example using this stored procedure: L<http://wi-fizzle.com/downloads/base64.sql>.  Next, in the client, compress using zlib and then encode using base64 the file you want to upload.  Last, upload the file and ask the server to decode and parse it:
-
-  use Compress::Zlib;
-  use MIME::Base64 qw(encode_base64);
   use Net::Wire10;
 
   # Connect to database server
@@ -2387,7 +2621,6 @@ First, add a BASE64 decoder to MySQL Server, for example using this stored proce
 
   # Go!
   upload_file('mydata.csv', '`test`.`sometable`');
-  upload_file('mydata2.csv', '`test`.`othertable`');
 
   sub upload_file {
     my $filename = shift;
@@ -2395,16 +2628,13 @@ First, add a BASE64 decoder to MySQL Server, for example using this stored proce
 
     # Load file
     open(FILE, $filename) or die "$!";
-    @rawdata = <FILE>;
-
-    # Compress with zlib
-    my $compressed = compress(@rawdata);
-
-    # Encode with base64
-    my $textformat = encode_base64($compressed);
+    binmode FILE;
+    $rawdata = join('', <FILE>);
 
     # Upload file to server
-    $wire->query("SELECT UNCOMPRESS(BASE64_DECODE('$textformat')) INTO DUMPFILE '/tmp/upload.csv'");
+    my $ps = $wire->prepare("SELECT ? INTO DUMPFILE '/tmp/upload.csv'");
+    $ps->set_parameter(1, $rawdata, DATA_BINARY);
+    $ps->query;
 
     # Load data - notice that this is server-side, there is no LOCAL keyword.
     $wire->query("LOAD DATA INFILE '/tmp/upload.csv' INTO TABLE $table");

@@ -6,6 +6,7 @@ WriteMakefile(
 	PREREQ_PM           => {
 		Digest::SHA1     => 0.0,
 		Encode           => 0.0,
+		Exporter         => 0.0,
 		IO::Socket       => 0.0,
 		IO::Select       => 0.0,
 		utf8             => 0.0,
