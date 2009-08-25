@@ -16,7 +16,7 @@ use constant {
 	DEFAULT_FLAGS        => 0,
 };
 
-$VERSION = '1.02';
+$VERSION = '1.03';
 
 use constant STREAM_BUFFER_LENGTH => 65536;
 use constant MACKET_HEADER_LENGTH => 4;
@@ -364,6 +364,8 @@ sub _connect {
 	my $self = shift;
 
 	$self->_vanilla_error("Already connected") if defined($self->{socket});
+	$self->_fatal_error("No host given") if length($self->{host}) == 0;
+	$self->_fatal_error("No port given") if length($self->{port}) == 0;
 
 	# Connect timeout.
 	$self->_reset_timeout;
@@ -481,8 +483,6 @@ sub _queue_mackets {
 		$self->{packet_read} -= $self->{packet_goal};
 		$self->{packet_goal} = undef;
 	}
-
-	return 1;
 }
 
 # Gets the next macket in the queue
@@ -776,7 +776,7 @@ sub _send_login_message {
 	$body .= "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 	# Null-terminated: user name
 	$body .= $self->{user} . "\0";
-	if (defined($self->{password})) {
+	if (length($self->{password}) > 0) {
 		$body .= "\x14" . Net::Wire10::Password->scramble($self->{password}, $self->{salt});
 	} else {
 		$body .= "\0";
@@ -1325,8 +1325,9 @@ sub next_array {
 	my $row;
 
 	# Note: A die() from this context often brings an application down.
-	#       For disconnected result sets, row data is integrity checked
-	#       during query() to simplify error handling for applications.
+	#       For disconnected result sets, row data could be integrity
+	#       checked during query() to simplify error handling for
+	#       applications.
 
 	if ($self->{wire}) {
 		# In streaming mode, fetch a row
@@ -1759,6 +1760,13 @@ sub quote_wildcards {
 
 package Net::Wire10::Password;
 
+# Note: Digest::SHA1 is used rather than Digest::SHA because the former was
+#       in my tests slightly faster when processing small amounts of data
+#       (such as passwords).
+# Note: Neither Digest::SHA nor Digest::SHA1 are pure perl modules.
+#       Digest::SHA::PurePerl exists, but is somewhat slow, so switching to
+#       that depends on a good connection pooling mechanism being added first.
+
 use strict;
 use warnings;
 use Digest::SHA1;
@@ -1777,15 +1785,12 @@ sub _make_scrambled_password {
 	my $password = shift;
 
 	my $ctx = Digest::SHA1->new;
-	$ctx->reset;
 	$ctx->add($password);
 	my $stage1 = $ctx->digest;
 
-	$ctx->reset;
 	$ctx->add($stage1);
 	my $stage2 = $ctx->digest;
 
-	$ctx->reset;
 	$ctx->add($hash_seed);
 	$ctx->add($stage2);
 	my $result = $ctx->digest;
@@ -2181,6 +2186,18 @@ After a fatal error, a successful call to connect() causes is_connected to retur
 =head3 is_error
 
 Returns true if an error code and message is available from the server or the driver.
+
+=head3 get_error_code
+
+Returns the server-reported (1xxx) error code, or a client (2xxx) error code.
+
+=head3 get_error_state
+
+Returns the SQL state code sent by the server when an error occurs, or HY000 for errors that does not have a standardized designation.
+
+=head3 get_error_message
+
+Returns an error string sent by the server.  Usually contains a mix of text corresponding to the error code (see above), in whatever language the server is started with, and some factual information from the query that caused the error or similar context.
 
 =head3 get_server_version
 

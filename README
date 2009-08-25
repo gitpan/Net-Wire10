@@ -1,0 +1,13 @@
+DOCUMENTATION
+
+After installing, you can find documentation with the perldoc command.
+
+    perldoc Net::Wire10
+
+You can also look for information at:
+
+    CPAN's documentation viewer
+        http://search.cpan.org/dist/Net-Wire10/lib/Net/Wire10.pm
+
+    CPAN's issue tracker
+        http://rt.cpan.org/NoAuth/Bugs.html?Dist=Net-Wire10
