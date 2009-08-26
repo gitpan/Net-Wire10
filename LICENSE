@@ -1,0 +1,11 @@
+LICENSE
+
+After installing, you can find the original authors (copyright
+holders) and license information with the perldoc command:
+
+    perldoc Net::Wire10
+
+You can also find this information online:
+
+    CPAN's documentation viewer
+        http://search.cpan.org/dist/Net-Wire10/lib/Net/Wire10.pm

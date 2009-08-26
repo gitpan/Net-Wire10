@@ -1,1 +1,10 @@
+CHANGELOG
+
 A hand-written version history for Net-Wire10 is currently not available.
+
+If more contributors join the project, the code will go in source control.
+From there a changelog can be distilled with relative ease.
+
+Until then, a good overview of changes can be obtained by diffing current
+modules against the POD documentation for earlier releases, available at
+http://backpan.perl.org/.
