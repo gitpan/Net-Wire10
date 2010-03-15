@@ -34,6 +34,7 @@ my $builder = Module::Build->new(
 		'Test::More'         => 0.0,
 	},
 	requires => {
+		'Config'             => 0.0,
 		'Digest::SHA1'       => 0.0,
 		'Encode'             => 0.0,
 		'Exporter'           => 0.0,

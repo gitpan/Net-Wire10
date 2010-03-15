@@ -6,7 +6,8 @@ use IO::Socket;
 use IO::Select;
 use utf8;
 use Encode;
-use threads;
+use Config;
+if ($Config{usethreads}) { use threads; }
 use threads::shared;
 use vars qw($VERSION $DEBUG);
 
@@ -16,7 +17,7 @@ use constant {
 	DEFAULT_FLAGS        => 0,
 };
 
-$VERSION = '1.04';
+$VERSION = '1.05';
 
 use constant STREAM_BUFFER_LENGTH => 65536;
 use constant MACKET_HEADER_LENGTH => 4;
@@ -102,27 +103,27 @@ BEGIN {
 	);
 
 	our %UTF8_COLLATIONS = (
-		33 => 'UTF8_GENERAL_CI',
-		83 => 'UTF8_BIN',
-		192 => 'UTF8_UNICODE_CI',
-		193 => 'UTF8_ICELANDIC_CI',
-		194 => 'UTF8_LATVIAN_CI',
-		195 => 'UTF8_ROMANIAN_CI',
-		196 => 'UTF8_SLOVENIAN_CI',
-		197 => 'UTF8_POLISH_CI',
-		198 => 'UTF8_ESTONIAN_CI',
-		199 => 'UTF8_SPANISH_CI',
-		200 => 'UTF8_SWEDISH_CI',
-		201 => 'UTF8_TURKISH_CI',
-		202 => 'UTF8_CZECH_CI',
-		203 => 'UTF8_DANISH_CI',
-		204 => 'UTF8_LITHUANIAN_CI',
-		205 => 'UTF8_SLOVAK_CI',
-		206 => 'UTF8_SPANISH2_CI',
-		207 => 'UTF8_ROMAN_CI',
-		208 => 'UTF8_PERSIAN_CI',
-		209 => 'UTF8_ESPERANTO_CI',
-		210 => 'UTF8_HUNGARIAN_CI',
+		33 => 'GENERAL_CI',
+		83 => 'BIN',
+		192 => 'UNICODE_CI',
+		193 => 'ICELANDIC_CI',
+		194 => 'LATVIAN_CI',
+		195 => 'ROMANIAN_CI',
+		196 => 'SLOVENIAN_CI',
+		197 => 'POLISH_CI',
+		198 => 'ESTONIAN_CI',
+		199 => 'SPANISH_CI',
+		200 => 'SWEDISH_CI',
+		201 => 'TURKISH_CI',
+		202 => 'CZECH_CI',
+		203 => 'DANISH_CI',
+		204 => 'LITHUANIAN_CI',
+		205 => 'SLOVAK_CI',
+		206 => 'SPANISH2_CI',
+		207 => 'ROMAN_CI',
+		208 => 'PERSIAN_CI',
+		209 => 'ESPERANTO_CI',
+		210 => 'HUNGARIAN_CI',
 	);
 
 	our %DATA_TYPES = (
@@ -130,10 +131,23 @@ BEGIN {
 		1 => 'BINARY',
 	);
 
+	our %SERVER_STATUS = (
+		0x00000001 => 'IN_TRANS',
+		0x00000002 => 'AUTOCOMMIT',
+		0x00000004 => 'MORE_RESULTS',
+		0x00000008 => 'MORE_RESULTS_EXISTS',
+		0x00000010 => 'NO_GOOD_INDEX_USED',
+		0x00000020 => 'NO_INDEX_USED',
+		0x00000040 => 'CURSOR_EXISTS',
+		0x00000080 => 'LAST_ROW_SENT',
+		0x00000100 => 'DB_DROPPED',
+		0x00000200 => 'NO_BACKSLASH_ESCAPES',
+		0x00000400 => 'METADATA_CHANGED',
+	);
+
 	# Enumerations that are currently not included here:
 	#  * Server capabilities
 	#  * Server language
-	#  * Server status
 	#  * Server error code
 	#  * Server error state
 	#  * SQL data types
@@ -170,13 +184,31 @@ BEGIN {
 		}
 	}
 
+	sub _detect_alarm_bug {
+		# Try for 2sec to activate a 1sec (potentially less)
+		# alarm(), while cycling through select().  During
+		# package construction, this takes 0.1s if bug-free
+		# and ~2s otherwise.
+		my $alarm_bug = 1;
+		local $SIG{ALRM} = sub { $alarm_bug = 0; };
+		alarm 1;
+		for (my $i = 0; $i < 20; $i++) {
+			select(undef, undef, undef, 0.1);
+		}
+		local $SIG{ALRM} = sub { };
+		sleep 0;
+		return $alarm_bug;
+	}
+
 	_assign("MAX_UINT_SIZE", _find_largest_uint);
+	_assign("HAS_ALARM_BUG", _detect_alarm_bug);
 
 	_make_constant(\%MACKET_NAMES, "MACKET_");
 	_make_constant(\%COMMAND_NAMES, "COMMAND_");
 	_make_constant(\%FLAG_NAMES, "FLAG_");
-	_make_constant(\%UTF8_COLLATIONS, "");
+	_make_constant(\%UTF8_COLLATIONS, "UTF8_");
 	_make_constant(\%DATA_TYPES, "DATA_");
+	_make_constant(\%SERVER_STATUS, "STATUS_");
 }
 
 my %MACKET_NAMES = %{*MACKET_NAMES};
@@ -184,6 +216,7 @@ my %COMMAND_NAMES = %{*COMMAND_NAMES};
 my %FLAG_NAMES = %{*FLAG_NAMES};
 my %UTF8_COLLATIONS = %{*UTF8_COLLATIONS};
 my %DATA_TYPES = %{*DATA_TYPES};
+my %SERVER_STATUS = %{*SERVER_STATUS};
 
 # Constructor
 sub new {
@@ -379,7 +412,7 @@ sub _fatal_error {
 	$self->{error} = Net::Wire10::Error->new(-1, '', $msg) unless defined ($self->{error});
 	$self->{error}->{message} = $msg if length($msg) > 0;
 
-	die $msg;
+	die $self->{error}->{message};
 }
 
 # When a non-fatal error occurs, just throw it.
@@ -390,7 +423,7 @@ sub _vanilla_error {
 	$self->{error} = Net::Wire10::Error->new(-1, '', $msg) unless defined ($self->{error});
 	$self->{error}->{message} = $msg if length($msg) > 0;
 
-	die $msg;
+	die $self->{error}->{message};
 }
 
 # Receives data from the network and reassembles fragmented packets
@@ -401,6 +434,8 @@ sub _receive_packet_data {
 	my $data;
 
 	while ($self->_check_time_remaining) {
+		# Work around a bug in alarm().
+		sleep 0 if HAS_ALARM_BUG;
 		# Cancel if requested.
 		$self->_fatal_error("Query cancelled") if $self->{cancelling};
 		# Ask every second if there is data to be read.
@@ -723,9 +758,9 @@ sub _send_login_message {
 		# Unsupported:  IGNORE_SIGPIPE
 		FLAG_TRANSACTIONS +
 		# Unsupported:  RESERVED
-		FLAG_SECURE_CONNECTION;
+		FLAG_SECURE_CONNECTION +
 		# Unsupported:  MULTI_STATEMENTS
-		# Unsupported:  MULTI_RESULTS
+		FLAG_MULTI_RESULTS;
 		# Unsupported:  SSL_VERIFY_SERVER_CERT
 		# Unsupported:  REMEMBER_OPTIONS
 
@@ -995,9 +1030,9 @@ sub _retrieve_row_data {
 sub _detach_results {
 	my $self = shift;
 	my $iterator = shift;
+	$iterator->{wire}->{streaming_iterator} = undef;
+	$iterator->{wire}->{streaming} = 0;
 	$iterator->{wire} = undef;
-	$self->{streaming_iterator} = undef;
-	$self->{streaming} = 0;
 }
 
 # Reads and interprets OK, saving the number of affected rows,
@@ -1056,8 +1091,8 @@ sub _parse_eof_macket {
 	printf "  -> Warning count: %d\n", $warnings if $self->{debug} & 1;
 	# Server status
 	my $status = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
-	printf "  -> Server status flags (ignored): 0x%x\n", $status if $self->{debug} & 1;
-
+	printf "  -> Server status flags: 0x%x\n", $status if $self->{debug} & 1;
+	$self->_fatal_error("Query yielded multiple results") if $status & STATUS_MORE_RESULTS_EXISTS;
 	$iterator->{warnings} = $warnings if defined($iterator);
 }
 
@@ -1209,7 +1244,7 @@ sub _decode_string_or_fail {
 sub _reset_command_state {
 	my $self = shift;
 	# Disconnect streaming iterator.
-	$self->{streaming_iterator}->_detach if defined($self->{streaming_iterator});
+	$self->_detach_results($self->{streaming_iterator}) if defined($self->{streaming_iterator});
 	# Reset internal column counter.
 	$self->{no_of_columns} = undef;
 	# Reset error state.
@@ -1352,7 +1387,7 @@ sub next_array {
 	# Return unless there is another row available
 	return undef if scalar(@{$self->{row_data}}) == 0;
 
-	$row = pop(@{$self->{row_data}});
+	$row = shift(@{$self->{row_data}});
 	my $pos = 0;
 	for (my $i = 1; $i <= scalar(@{$self->{column_info}}); $i++) {
 		my $fieldvalue = eval {
@@ -1511,7 +1546,7 @@ sub get_marker_count {
 }
 
 # See note about split and whitespace in Net::Wire10::Util.
-my $whitespace = qr/^[\ \r\n\v\t\f]$/;
+my $whitespace = qr/^[\ \r\n\013\t\f]$/;
 
 # Probably degrades performance quite a bit, necessary due to server bug:
 # http://bugs.mysql.com/bug.php?id=1337
@@ -1777,7 +1812,7 @@ my $split = qr/
 		# big comment in C-style or version-conditional code or
 		\/\*(?:[^\*]|\*[^\/])*(?:\*\/|\*\z|\z) |
 		# whitespace
-		[\ \r\n\v\t\f]+ |
+		[\ \r\n\013\t\f]+ |
 		# single-quoted literal text or
 		'(?:[^'\\]*|\\(?:.|\n)|'')*(?:'|\z) |
 		# double-quoted literal text or
@@ -1785,7 +1820,7 @@ my $split = qr/
 		# schema-quoted literal text or
 		`(?:[^`]*|``)*(?:`|\z) |
 		# else it is either sql speak or
-		(?:[^'"`\?\ \r\n\v\t\f\#\-\/]|\/[^\*]|-[^-]|--(?=[^[:cntrl:]\ ]))+ |
+		(?:[^'"`\?\ \r\n\013\t\f\#\-\/]|\/[^\*]|-[^-]|--(?=[^[:cntrl:]\ ]))+ |
 		# bingo: a ? placeholder
 		\?
 	)
@@ -2732,13 +2767,7 @@ See also notes on connection pooling, which can be a useful technique to avoid i
 
 =head3 Multiple result sets per query
 
-Currently unsupported.  Support would be nice to have because MySQL Server requires this for executing stored procedures (but not stored functions) that digs out result set data: before the actual result set, MySQL Server will for any CALL statement generate an extra result set which contains some sort of status data about how the execution went.
-
-Normally this kind of information is sent back in protocol status fields, but that differs when using CALL.  The implicit extra result set is very poorly documented, so it is hard to say if it is useful or not.  Many utilities seems to completely ignore it.
-
-Multiple result sets per query is documented to be incompatible with prepared statements, but the reason why is not.
-
-If you get the error message "can't return a result set in the given context", this is the server telling you that it would like to generate an extra result set, but can't because the connector does not support it.
+Currently unsupported.  Multiple result sets per query is documented to be incompatible with prepared statements (but the reason why is not).
 
 =head3 Non-query related commands
 
@@ -2863,9 +2892,7 @@ Bugs and design issues in Perl itself may also affect the driver.  For example:
 
 =over 4
 
-=item * Using an alarm to invoke cancel() often does not work, especially on Windows (use a thread instead).
-
-=item * Integer scalars are always signed.
+=item * Perl integer scalars are always signed, unlike MySQL integers.
 
 =back
 
