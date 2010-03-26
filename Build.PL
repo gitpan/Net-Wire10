@@ -12,6 +12,9 @@ use Module::Build;
 #
 # $ perl Build.PL
 #
+# (Notice that above, a script named "Build.PL" is used, while
+#  below a different script named "Build" is used.)
+#
 # Then choose an action from this list:
 #
 # $ perl Build help
@@ -31,18 +34,21 @@ my $builder = Module::Build->new(
 	license                 => 'perl',
 	dist_version_from       => 'lib/Net/Wire10.pm',
 	build_requires => {
-		'Test::More'         => 0.0,
+		'Test::More'             => 0.0,
 	},
 	requires => {
-		'Config'             => 0.0,
-		'Digest::SHA1'       => 0.0,
-		'Encode'             => 0.0,
-		'Exporter'           => 0.0,
-		'IO::Socket'         => 0.0,
-		'IO::Select'         => 0.0,
-		'utf8'               => 0.0,
-		'threads'            => 0.0,
-		'threads::shared'    => 0.0,
+		'Config'                 => 0.0,
+		'Digest::SHA::PurePerl'  => 0.0,
+		'Encode'                 => 0.0,
+		'Exporter'               => 0.0,
+		'IO::Socket'             => 0.0,
+		'IO::Select'             => 0.0,
+		'utf8'                   => 0.0,
+		'threads::shared'        => 0.0,
+	},
+	recommends => {
+		'Digest::SHA1'           => 0.0,
+		'threads'                => 0.0,
 	},
 	create_makefile_pl => 'traditional',
 );
