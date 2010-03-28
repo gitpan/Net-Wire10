@@ -14,7 +14,7 @@ use constant {
 	DEFAULT_FLAGS        => 0,
 };
 
-$VERSION = '1.06';
+$VERSION = '1.07';
 
 use constant STREAM_BUFFER_LENGTH => 65536;
 use constant MACKET_HEADER_LENGTH => 4;
