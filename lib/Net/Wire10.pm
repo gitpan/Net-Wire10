@@ -9,31 +9,19 @@ use Encode;
 use vars qw($VERSION $DEBUG);
 
 use constant {
-	DEFAULT_PORT_NUMBER  => 3306,
-	DEFAULT_TIMEOUT      => 30,
-	DEFAULT_FLAGS        => 0,
+	DEFAULT_PORT_NUMBER      => 3306,
+	DEFAULT_CONNECT_TIMEOUT  => 5,
+	DEFAULT_QUERY_TIMEOUT    => 30,
 };
 
-$VERSION = '1.07';
+$VERSION = '1.08';
 
 use constant STREAM_BUFFER_LENGTH => 65536;
 use constant MACKET_HEADER_LENGTH => 4;
 use constant TIMEOUT_GRANULARITY => 1;
 
-use base 'Exporter';
-our @EXPORT = qw(DATA_TEXT DATA_BINARY);
-
 BEGIN {
 	package Net::Wire10;
-
-	# Use threads if available, always use threads::shared.
-	use Config;
-	if ($Config{useithreads}) {
-		require threads;
-		threads->import;
-	}
-	require threads::shared;
-	threads::shared->import;
 
 	# Macket (MySQL messages) types.
 	our %MACKET_NAMES = (
@@ -266,10 +254,13 @@ BEGIN {
 	# Pick your poison..  Detecting whether the current platform has
 	# this bug takes 1-2 seconds if the bug is present; always
 	# activating the workaround introduces an (as yet) unmeasured
-	# delay on platforms where the bug is not present.
+	# delay on platforms where the bug is not present; activating
+	# the workaround based on a platform identifier does not adapt
+	# when a new platform appears or an old platform gets fixed.
 	#
 	#_assign("FIX_ALARM_BUG", _detect_alarm_bug);
-	_assign("FIX_ALARM_BUG", 1);
+	#_assign("FIX_ALARM_BUG", 1);
+	_assign("FIX_ALARM_BUG", $^O =~ /^MSWin/ ? 1 : 0);
 
 	_make_constant(\%MACKET_NAMES, "MACKET_");
 	_make_constant(\%COMMAND_NAMES, "COMMAND_");
@@ -296,18 +287,18 @@ sub new {
 	my %args = @_;
 
 	my $self = bless {
-		host       => $args{host},
-		port       => $args{port} || DEFAULT_PORT_NUMBER,
-		database   => $args{database},
-		user       => $args{user},
-		password   => $args{password},
-		timeout    => defined($args{timeout}) ? $args{timeout} : DEFAULT_TIMEOUT,
-		flags      => $args{flags} || DEFAULT_FLAGS,
-		debug      => $args{debug} || 0,
+		host             => $args{host},
+		port             => $args{port} || DEFAULT_PORT_NUMBER,
+		database         => $args{database},
+		user             => $args{user},
+		password         => $args{password},
+		connect_timeout  => defined($args{connect_timeout}) ? $args{connect_timeout} : DEFAULT_CONNECT_TIMEOUT,
+		query_timeout    => defined($args{query_timeout}) ? $args{query_timeout} : DEFAULT_QUERY_TIMEOUT,
+		flags            => $args{flags} || 0,
+		debug            => $args{debug} || 0,
 	}, $class;
 	$self->_reset_connection_state;
 	$self->_reset_command_state;
-	share($self->{cancelling});
 	return $self;
 }
 
@@ -351,7 +342,7 @@ sub ping {
 	$self->_check_streaming;
 	$self->_check_connected;
 	$self->_reset_command_state;
-	$self->_reset_timeout;
+	$self->_reset_timeout($self->{connect_timeout});
 
 	return $self->_execute_command(COMMAND_PING, '', undef);
 }
@@ -416,11 +407,12 @@ sub get_error_info {
 # Reset the time remaining counter before executing a command
 sub _reset_timeout {
 	my $self = shift;
-	if ($self->{timeout} == 0) {
+	my $seconds = shift;
+	if ($seconds == 0) {
 		$self->{command_expire_time} = 0;
 		return undef;
 	}
-	$self->{command_expire_time} = time + $self->{timeout};
+	$self->{command_expire_time} = time + $seconds;
 	return undef;
 }
 
@@ -455,7 +447,7 @@ sub _connect {
 	$self->_fatal_error("No port given") if length($self->{port}) == 0;
 
 	# Connect timeout.
-	$self->_reset_timeout;
+	$self->_reset_timeout($self->{connect_timeout});
 
 	my $socket;
 	printf "Connecting to: %s:%d/tcp\n", $self->{host}, $self->{port} if $self->{debug} & 1;
@@ -739,7 +731,7 @@ sub _perform_handshake {
 
 	# Skip the macket header as it has been processed by _next_macket().
 	my $i = MACKET_HEADER_LENGTH;
-	printf "\n%s():\n", $self->_caller_name if $self->{debug} & 1;
+	printf "\n%s():\n", (caller(1))[3] if $self->{debug} & 1;
 	# Protocol version
 	$self->{protocol_version} = ord substr $macket->{buf}, $i, 1;
 	printf "  -> Protocol Version: %d\n", $self->{protocol_version} if $self->{debug} & 1;
@@ -892,7 +884,7 @@ sub _execute_query {
 	$self->_check_streaming;
 	$self->_check_connected;
 	$self->_reset_command_state;
-	$self->_reset_timeout;
+	$self->_reset_timeout($self->{query_timeout});
 	$self->{streaming} = 1 if $wantstream;
 
 	my $iterator = Net::Wire10::Results->new($self);
@@ -1122,7 +1114,7 @@ sub _parse_ok_macket {
 	# to ensure that the macket is read correctly.
 	# First, skip macket header and macket type.
 	my $pos = MACKET_HEADER_LENGTH + 1;
-	printf "\n%s():\n", $self->_caller_name if $self->{debug} & 1;
+	printf "\n%s():\n", (caller(1))[3] if $self->{debug} & 1;
 	# Affected rows
 	my $affected = $self->_decode_lcb_or_fail($macket->{buf}, \$pos);
 	printf "  -> Affected rows: %d\n", $affected if $self->{debug} & 1;
@@ -1158,7 +1150,7 @@ sub _parse_eof_macket {
 	my $pos = MACKET_HEADER_LENGTH + 1;
 	my $left = length($macket->{buf}) - $pos;
 	$self->_fatal_error("Truncated EOF macket") if $left < 4;
-	printf "\n%s():\n", $self->_caller_name if $self->{debug} & 1;
+	printf "\n%s():\n", (caller(1))[3] if $self->{debug} & 1;
 	# Warning count
 	my $warnings = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 2);
 	printf "  -> Warning count: %d\n", $warnings if $self->{debug} & 1;
@@ -1214,7 +1206,7 @@ sub _parse_column_info_macket {
 	my $decimal_scale = Net::Wire10::Util::decode_my_uint($macket->{buf}, \$pos, 1);
 	# Filler
 	$pos += 2;
-	printf "\n%s():\n", $self->_caller_name if $self->{debug} & 1;
+	printf "\n%s():\n", (caller(1))[3] if $self->{debug} & 1;
 	# Optionally the default field is available in the macket
 	my $macket_length = length($macket->{buf}) - MACKET_HEADER_LENGTH;
 	if ($macket_length - 1 > $pos) {
@@ -1346,19 +1338,12 @@ sub _reset_connection_state {
 	$self->{command_expire_time} = undef;
 }
 
-# Returns the name of the calling method, for debugging purposes.
-sub _caller_name {
-	my $self = shift;
-	my ($method_name) = (caller(1))[3];
-	return $method_name;
-}
-
 # Dumps the packet to standard output, useful for debugging
 sub _dump_packet {
 	my $self = shift;
 	return unless $self->{debug} & 4;
 	my $packet = shift;
-	my $str = sprintf "\n%s():\n", Net::Wire10::_caller_name($self);
+	my $str = sprintf "\n%s():\n", (caller(1))[3];
 	my $len = length($packet);
 	my $skipped = 0;
 	my $pos = -16;
@@ -1391,7 +1376,7 @@ sub _dump_macket {
 	my $self = shift;
 	return unless $self->{debug} & 2;
 	my $macket = shift;
-	my $str = sprintf "\n%s():\n", Net::Wire10::_caller_name($self);
+	my $str = sprintf "\n%s():\n", (caller(1))[3];
 	$str .= sprintf "  -> serial: %d\n", Net::Wire10::_extract_macket_number($self, $macket);
 	$str .= sprintf "  -> length: %d\n", Net::Wire10::_extract_macket_length($self, $macket);
 	my $type = $macket->{type};
@@ -2189,8 +2174,8 @@ Net::Wire10 implements the low-level network protocol, alias the MySQL wire prot
 
 Net::Wire10 is installed like any other CPAN perl module:
 
-  $ perl -MCPAN -e shell
-  cpan> install Net::Wire10
+  $ perl -MCPANPLUS -eshell
+  CPAN Terminal> install Net::Wire10
 
 For Perl installations where the CPAN module (used above) is missing, you can also just download the .tar.gz from this site and drop the B<Net> folder in the same folder as the Perl file you want to use the driver from.
 
@@ -2271,7 +2256,7 @@ Creates a new driver instance using the specified parameters.
   # Connect to Sphinx server on localhost
   my $wire = Net::Wire10->new(
       host       => 'localhost',
-      port       => 3307,
+      port       => 9306,
       user       => 'test',
       password   => 'test',
     );
@@ -2289,7 +2274,7 @@ Host name or IP address of the server to which a connection is desired.
 TCP port where the server daemon listens.  The port differs depending on the server type, so that you can have more than one type of server installed on the same machine.
 
   MySQL uses port 3306,
-  Sphinx uses port 3307,
+  Sphinx uses port 9306,
   Drizzle uses port 4427.
 
 The default is 3306 (MySQL), which is the most commonly used at the moment.
@@ -2308,9 +2293,13 @@ Username for identifying the service or user to the database server.  This will 
 
 Password for authenticating the service or user to the database server.
 
-=item timeout
+=item connect_timeout
 
-How long to wait before a connection attempt fails, and also how long to wait before a query is aborted.
+How long to wait before a connection attempt fails.
+
+=item command_timeout
+
+How long to wait before a query is aborted.
 
 =item debug
 
@@ -2374,11 +2363,26 @@ Database and database object names cannot be parameterized, because schema ident
 
 =head3 cancel (thread safe)
 
-Cancels the running query.  Safe to call asynchronously (thread safe).
+Cancels the running query.
+
+Safe to call asynchronously from a signal handler.  Example:
+
+  # Press CTRL-C to cancel this query.
+  {
+    local $SIG{INT} = sub { $wire->cancel; };
+    $wire->query("SELECT SLEEP(10)");
+  }
+
+Safe to call asynchronously from another thread (thread safe).  Example:
 
   use threads;
+  use threads::shared;
 
-  # abort on some condition (sleep for demonstration purposes)
+  # we've chosen to use the threads::shared library, therefore
+  # we need to share the driver object with this library.
+  share $wire->{cancelling};
+
+  # abort on some condition (sleep() for demonstration purposes)
   threads->create(sub {
     $wire->cancel if sleep 2;
   })->detach;
@@ -2388,9 +2392,11 @@ Cancels the running query.  Safe to call asynchronously (thread safe).
 
 Run the example above to see how cancel() works to interrupt the SLEEP(10) statement before it finishes, after only 2 seconds instead of the full 10.
 
+Notice that the entire C<$wire> object is not shared above.  This is because threads::shared fails to share some of the driver's internal structures.  Luckily, C<cancel()> only needs the C<$wire->{cancelling}> variable to be shared between threads for it to work.
+
 Another common way to kill a running query is to create another connection to the server, if possible, and use KILL QUERY (or KILL CONNECTION for older servers).  Using the KILL commands require a number of things, for example that the server has available connection slots, server privileges, etc.
 
-Cancel is normally only used for interactive applications, where the user can press a key such as ESC to cancel a running query.  For automated tasks, there is C<timeout> that can be used instead.  C<timeout> can also be disabled, for example for interactive applications, by setting it to C<0>.
+Cancel is normally used for interactive applications, where the user can press a key such as ESC to cancel a running query.  For automated tasks, there is C<query_timeout> that can be used instead.  C<query_timeout> can also be disabled, for example for interactive applications, by setting it to C<0>.
 
 =head3 is_connected
 
@@ -2957,6 +2963,8 @@ Bugs in the design of the over-the-wire protocol or the server may affect how th
 =item * Selecting data larger than max_packet_size server variable causes silent truncation on the server side (inserting does not).
 
 =item * Using tokens for LIMITs in prepared statements fails because the server chokes on quoted integers after LIMIT.
+
+=item * Server sometimes fail to reap dead connections.
 
 =back
 

@@ -37,18 +37,15 @@ my $builder = Module::Build->new(
 		'Test::More'             => 0.0,
 	},
 	requires => {
-		'Config'                 => 0.0,
 		'Digest::SHA::PurePerl'  => 0.0,
 		'Encode'                 => 0.0,
 		'Exporter'               => 0.0,
 		'IO::Socket'             => 0.0,
 		'IO::Select'             => 0.0,
 		'utf8'                   => 0.0,
-		'threads::shared'        => 0.0,
 	},
 	recommends => {
 		'Digest::SHA1'           => 0.0,
-		'threads'                => 0.0,
 	},
 	create_makefile_pl => 'traditional',
 );
